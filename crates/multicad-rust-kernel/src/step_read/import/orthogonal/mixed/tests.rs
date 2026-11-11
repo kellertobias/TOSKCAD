@@ -323,13 +323,26 @@ fn circular_opening_counts_against_the_step_face_edge_budget() {
     let ring = &mut boundary.faces[face].rings[0];
     let [start, end] = [ring[0], ring[1]];
     let subdivisions = MAX_VERTICES - ring.len() + 1;
-    ring.splice(
-        1..1,
-        (1..subdivisions).map(|i| {
+    let points = (1..subdivisions)
+        .map(|i| {
             let t = i as f64 / subdivisions as f64;
             std::array::from_fn(|axis| start[axis] + (end[axis] - start[axis]) * t)
-        }),
-    );
+        })
+        .collect::<Vec<_>>();
+    ring.splice(1..1, points.iter().copied());
+    let paired = boundary
+        .faces
+        .iter_mut()
+        .enumerate()
+        .filter(|(index, _)| *index != face)
+        .flat_map(|(_, face)| &mut face.rings)
+        .find_map(|ring| {
+            let index = (0..ring.len())
+                .find(|&index| ring[index] == end && ring[(index + 1) % ring.len()] == start)?;
+            ring.splice(index + 1..index + 1, points.iter().rev().copied());
+            Some(())
+        });
+    assert!(paired.is_some());
     assert!(boundary.supports_step());
     let pocket = OrthogonalPocket {
         face,

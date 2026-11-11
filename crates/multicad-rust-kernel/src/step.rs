@@ -174,6 +174,13 @@ pub fn write_slotted_orthogonal(
     })
 }
 
+fn orthogonal_admission(boundary: &Boundary) -> Result<bool, StepError> {
+    boundary.step_admission().map_err(|error| match error {
+        crate::orthogonal::BooleanError::Limit => StepError::Limit,
+        _ => StepError::InvalidGeometry,
+    })
+}
+
 fn encode_orthogonal(
     file: &mut StepFile,
     boundary: &Boundary,
@@ -182,6 +189,9 @@ fn encode_orthogonal(
     through: &[OrthogonalThroughBore],
     transform: &dyn Fn(Point) -> Point,
 ) -> Result<Entity, StepError> {
+    if !orthogonal_admission(boundary)? {
+        return Err(StepError::Unsupported);
+    }
     if boundary.shell_count != 1 {
         if !pockets.is_empty() || !slots.is_empty() || !through.is_empty() {
             return Err(StepError::Unsupported);
@@ -199,9 +209,6 @@ fn encode_orthogonal(
     let mut points = Vec::new();
     let mut indices = BTreeMap::new();
     for point in boundary.faces.iter().flat_map(|face| &face.rings).flatten() {
-        if point.iter().any(|value| !value.is_finite()) {
-            return Err(StepError::InvalidGeometry);
-        }
         if let std::collections::btree_map::Entry::Vacant(entry) = indices.entry(point_key(*point))
         {
             let placed = transform(*point);
@@ -217,9 +224,7 @@ fn encode_orthogonal(
         .faces
         .iter()
         .map(|face| {
-            let [outer, ..] = face.rings.as_slice() else {
-                return Err(StepError::InvalidGeometry);
-            };
+            let outer = &face.rings[0];
             let placed = |point| brep.vertices[indices[&point_key(point)]].point;
             let (normal, reference) = orthogonal_support(face, outer, placed)?;
             let point = brep.vertices[indices[&point_key(outer[0])]].cartesian;
@@ -249,9 +254,6 @@ fn encode_orthogonal(
             .iter()
             .enumerate()
             .map(|(i, ring)| {
-                if ring.len() < 4 {
-                    return Err(StepError::InvalidGeometry);
-                }
                 let ids: Vec<_> = ring
                     .iter()
                     .map(|&point| indices[&point_key(point)])

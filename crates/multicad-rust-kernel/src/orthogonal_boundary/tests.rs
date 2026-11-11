@@ -230,3 +230,140 @@ fn malformed_planar_regions_refuse_short_or_multiple_exterior_wires() {
         BoundaryError::Unresolved
     );
 }
+
+#[test]
+fn a_forged_single_shell_cannot_hide_cavities_or_independent_outer_components() {
+    let cavity = solid(&[stock()], &[box_([1.; 3], [4.; 3])], Operation::Subtract);
+    for count in [0, 1, 3] {
+        let mut boundary = build(cavity.quads()).unwrap();
+        boundary.shell_count = count;
+        assert!(!boundary.supports_step());
+        assert_eq!(
+            write_orthogonal(&boundary, unchanged),
+            Err(StepError::InvalidGeometry)
+        );
+    }
+    let separate = solid(&[stock(), box_([8.; 3], [9.; 3])], &[], Operation::Union);
+    let mut boundary = build(separate.quads()).unwrap();
+    assert!(box_void::validate_boundary_graph(&boundary).is_ok());
+    assert_eq!(
+        write_orthogonal(&boundary, unchanged),
+        Err(StepError::Unsupported)
+    );
+    boundary.shell_count = 1;
+    assert_eq!(
+        write_orthogonal(&boundary, unchanged),
+        Err(StepError::InvalidGeometry)
+    );
+}
+
+#[test]
+fn point_contacts_preserve_component_identity_but_cannot_forge_a_vertex_fan() {
+    let source = solid(&[stock(), box_([5.; 3], [6.; 3])], &[], Operation::Union);
+    let mut boundary = build(source.quads()).unwrap();
+    assert!(box_void::validate_boundary_graph(&boundary).is_ok());
+    assert_eq!(
+        write_orthogonal(&boundary, unchanged),
+        Err(StepError::Unsupported)
+    );
+    for face in &mut boundary.faces {
+        face.component = 0;
+    }
+    assert_eq!(
+        write_orthogonal(&boundary, unchanged),
+        Err(StepError::InvalidGeometry)
+    );
+    // Merging two incident face identities makes a branched fan, even though
+    // every edge still has two opposite uses on distinct face records.
+    let second = boundary
+        .faces
+        .iter()
+        .position(|face| face.normal == [0., 0., -1.] && face.rings[0].iter().all(|p| p[2] == 5.))
+        .unwrap();
+    let mut second = boundary.faces.remove(second);
+    let first = boundary
+        .faces
+        .iter_mut()
+        .find(|face| face.normal == [0., 0., 1.] && face.rings[0].iter().all(|p| p[2] == 5.))
+        .unwrap();
+    first.rings.append(&mut second.rings);
+    boundary.shell_count = 1;
+    assert_eq!(
+        write_orthogonal(&boundary, unchanged),
+        Err(StepError::InvalidGeometry)
+    );
+}
+
+#[test]
+fn malformed_wire_and_edge_incidence_fail_before_ordinary_encoding() {
+    let source = solid(&[stock()], &[], Operation::Union);
+    let mut boundary = build(source.quads()).unwrap();
+    let mut duplicate = boundary.faces[0].rings[0].clone();
+    duplicate.reverse();
+    boundary.faces[0].rings.push(duplicate);
+    assert_eq!(
+        write_orthogonal(&boundary, unchanged),
+        Err(StepError::InvalidGeometry)
+    );
+    let mut boundary = build(source.quads()).unwrap();
+    let face = &boundary.faces[0];
+    let duplicate = BoundaryFace {
+        component: face.component,
+        rings: face.rings.clone(),
+        quad_indices: face.quad_indices.clone(),
+        normal: face.normal,
+    };
+    boundary.faces.push(duplicate);
+    assert_eq!(
+        write_orthogonal(&boundary, unchanged),
+        Err(StepError::InvalidGeometry)
+    );
+    let mut boundary = build(source.quads()).unwrap();
+    boundary.faces[0].rings[0].reverse();
+    assert_eq!(
+        write_orthogonal(&boundary, unchanged),
+        Err(StepError::InvalidGeometry)
+    );
+    let empty = Boundary {
+        faces: Vec::new(),
+        shell_count: 1,
+    };
+    assert_eq!(
+        write_orthogonal(&empty, unchanged),
+        Err(StepError::InvalidGeometry)
+    );
+}
+
+#[test]
+fn ordinary_holes_and_conforming_collinear_loops_keep_one_valid_shell() {
+    let hole = solid(
+        &[stock()],
+        &[box_([1., 1., -1.], [4., 4., 6.])],
+        Operation::Subtract,
+    );
+    let boundary = build(hole.quads()).unwrap();
+    assert!(boundary.supports_step());
+    assert_eq!(
+        read_planar_solid(&write_orthogonal(&boundary, unchanged).unwrap(), 1e-7)
+            .unwrap()
+            .volume_mm3,
+        80.
+    );
+    let source = solid(&[stock()], &[], Operation::Union);
+    let mut boundary = build(source.quads()).unwrap();
+    let [a, b] = [boundary.faces[0].rings[0][0], boundary.faces[0].rings[0][1]];
+    let midpoint = std::array::from_fn(|i| a[i].midpoint(b[i]));
+    boundary.faces[0].rings[0].insert(1, midpoint);
+    for face in &mut boundary.faces[1..] {
+        let ring = &mut face.rings[0];
+        if let Some(i) = (0..ring.len()).find(|&i| ring[i] == b && ring[(i + 1) % ring.len()] == a)
+        {
+            ring.insert(i + 1, midpoint);
+            break;
+        }
+    }
+    assert!(boundary.supports_step());
+    let proof = read_planar_solid(&write_orthogonal(&boundary, unchanged).unwrap(), 1e-7).unwrap();
+    assert_eq!(proof.volume_mm3, 125.);
+    assert_eq!(proof.edges_mm.len(), 13);
+}

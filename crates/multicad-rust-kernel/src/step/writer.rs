@@ -219,13 +219,7 @@ impl Writer {
         boundary: &Boundary,
         transform: impl Fn(Point) -> Point,
     ) -> Result<(), StepError> {
-        if !boundary.supports_step() {
-            if matches!(
-                crate::orthogonal_boundary::box_void::boundary_certificate(boundary),
-                Err(crate::orthogonal::BooleanError::Limit)
-            ) {
-                return Err(StepError::Limit);
-            }
+        if !orthogonal_admission(boundary)? {
             return Err(StepError::Unsupported);
         }
         self.append(|file| encode_orthogonal(file, boundary, &[], &[], &[], &transform))
@@ -249,7 +243,9 @@ impl Writer {
         slots: &[OrthogonalSlot],
         transform: &dyn Fn(Point) -> Point,
     ) -> Result<(), StepError> {
-        if !supports_slotted_orthogonal(boundary, pockets, slots) {
+        if !orthogonal_admission(boundary)?
+            || !supports_slotted_orthogonal(boundary, pockets, slots)
+        {
             return Err(StepError::Unsupported);
         }
         orthogonal_slots::validate(geometry, boundary, slots, pockets, 1e-7, 1e-7)
@@ -268,7 +264,9 @@ impl Writer {
         if through.is_empty() {
             return self.append_pocketed_orthogonal(geometry, boundary, pockets, transform);
         }
-        if !supports_drilled_orthogonal(boundary, pockets, through) {
+        if !orthogonal_admission(boundary)?
+            || !supports_drilled_orthogonal(boundary, pockets, through)
+        {
             return Err(StepError::Unsupported);
         }
         crate::orthogonal_pockets::validate_with_through_bores(

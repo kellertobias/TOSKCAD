@@ -17,7 +17,7 @@ pub(crate) fn fixture() -> Boundary {
 #[test]
 fn exact_box_cavity_has_one_material_component_and_two_support_groups() {
     let source = fixture();
-    let proof = boundary(&source).unwrap();
+    let proof = boundary_certificate(&source).unwrap();
     assert_eq!(proof.groups[0].len(), 6);
     assert_eq!(proof.groups[1].len(), 6);
     assert_eq!(proof.solid.solid_count(), 1);
@@ -40,10 +40,10 @@ fn proof_refuses_missing_invalid_touched_and_nonrectangular_boundary_data() {
     assert!(recognize(&[], 0.).is_none());
     let mut source = fixture();
     source.shell_count = 1;
-    assert!(boundary(&source).is_none());
+    assert!(boundary_certificate(&source).is_err());
     source.shell_count = 2;
     source.faces[0].rings.push(vec![]);
-    assert!(boundary(&source).is_none());
+    assert!(boundary_certificate(&source).is_err());
     let mut source = faces();
     source[0].normal = source[0].normal.map(|n| 2. * n);
     assert!(recognize(&source, 0.).is_none());

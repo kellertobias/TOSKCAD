@@ -11,10 +11,6 @@ pub(crate) struct Certificate {
 
 type ProofResult<T> = std::result::Result<T, BooleanError>;
 
-pub(crate) fn boundary(boundary: &Boundary) -> Option<Certificate> {
-    boundary_certificate(boundary).ok()
-}
-
 pub(crate) fn boundary_certificate(boundary: &Boundary) -> ProofResult<Certificate> {
     budget(
         boundary.faces.len(),
@@ -62,41 +58,75 @@ struct Prepared {
     voids: Vec<[Point; 2]>,
 }
 
-fn components(faces: &[OrientedFace]) -> Option<Vec<Vec<usize>>> {
-    let mut edges = BTreeMap::<_, (usize, bool, u8)>::new();
-    let mut adjacent = vec![Vec::new(); faces.len()];
-    for (face, source) in faces.iter().enumerate() {
-        for ring in &source.rings {
+fn components<'a>(
+    faces: impl ExactSizeIterator<Item = (u32, &'a [Vec<Point>])>,
+) -> Option<Vec<Vec<usize>>> {
+    let count = faces.len();
+    if count == 0 {
+        return None;
+    }
+    let mut edges = BTreeMap::<_, (usize, bool, Option<usize>)>::new();
+    let mut adjacent = vec![Vec::new(); count];
+    for (face, (component, rings)) in faces.enumerate() {
+        if rings.is_empty() {
+            return None;
+        }
+        for ring in rings {
+            if ring.len() < 4 || ring.iter().flatten().any(|value| !value.is_finite()) {
+                return None;
+            }
+            let mut unique = BTreeSet::new();
+            if ring.iter().any(|&point| !unique.insert(point_key(point))) {
+                return None;
+            }
             for (&a, &b) in ring.iter().zip(ring.iter().cycle().skip(1)) {
-                let [a, b] = [a, b].map(point_key);
-                if a == b {
-                    return None;
-                }
+                let [a, b] = [a, b].map(|point| (component, point_key(point)));
                 let forward = a < b;
                 let key = if forward { [a, b] } else { [b, a] };
                 match edges.entry(key) {
                     std::collections::btree_map::Entry::Vacant(entry) => {
-                        entry.insert((face, forward, 1));
+                        entry.insert((face, forward, None));
                     }
                     std::collections::btree_map::Entry::Occupied(mut entry) => {
-                        let (previous_face, previous, count) = entry.get_mut();
-                        if *count != 1 || *previous == forward || *previous_face == face {
+                        let (previous_face, previous, paired) = entry.get_mut();
+                        if paired.is_some() || *previous == forward || *previous_face == face {
                             return None;
                         }
                         adjacent[*previous_face].push(face);
                         adjacent[face].push(*previous_face);
-                        *count = 2;
+                        *paired = Some(face);
                     }
                 }
             }
         }
     }
-    if edges.values().any(|&(_, _, count)| count != 2) {
-        return None;
+    let mut fans = BTreeMap::<_, BTreeMap<usize, Vec<usize>>>::new();
+    for (edge, (a, _, b)) in edges {
+        let b = b?;
+        for vertex in edge {
+            let fan = fans.entry(vertex).or_default();
+            fan.entry(a).or_default().push(b);
+            fan.entry(b).or_default().push(a);
+        }
     }
-    let mut visited = vec![false; faces.len()];
+    for fan in fans.values() {
+        if fan.values().any(|neighbors| neighbors.len() != 2) {
+            return None;
+        }
+        let mut visited = BTreeSet::new();
+        let mut pending = vec![*fan.keys().next().expect("incident faces")];
+        while let Some(face) = pending.pop() {
+            if visited.insert(face) {
+                pending.extend(&fan[&face]);
+            }
+        }
+        if visited.len() != fan.len() {
+            return None;
+        }
+    }
+    let mut visited = vec![false; count];
     let mut groups = Vec::new();
-    for first in 0..faces.len() {
+    for first in 0..count {
         if visited[first] {
             continue;
         }
@@ -116,6 +146,27 @@ fn components(faces: &[OrientedFace]) -> Option<Vec<Vec<usize>>> {
         groups.push(group);
     }
     Some(groups)
+}
+
+pub(crate) fn validate_boundary_graph(boundary: &Boundary) -> ProofResult<()> {
+    budget(
+        boundary.faces.len(),
+        boundary
+            .faces
+            .iter()
+            .flat_map(|face| face.rings.iter().map(Vec::len)),
+    )?;
+    let groups = components(
+        boundary
+            .faces
+            .iter()
+            .map(|face| (face.component, face.rings.as_slice())),
+    )
+    .ok_or(BooleanError::Invalid)?;
+    if groups.len() != boundary.shell_count {
+        return Err(BooleanError::Invalid);
+    }
+    Ok(())
 }
 
 pub(crate) fn recognize(faces: &[OrientedFace], tolerance: f64) -> Option<Certificate> {
@@ -302,7 +353,7 @@ fn prepare(faces: &[OrientedFace], tolerance: f64) -> Option<Prepared> {
         bounds
     };
     let outer = extent(&(0..local.len()).collect::<Vec<_>>());
-    let mut groups = components(faces)?;
+    let mut groups = components(faces.iter().map(|face| (0, face.rings.as_slice())))?;
     if groups.len() < 2 {
         return None;
     }

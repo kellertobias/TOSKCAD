@@ -165,7 +165,7 @@ fn only_conforming_collinear_subdivisions_can_be_written_as_closed_shells() {
     let unchanged = |point: Point| point;
     assert_eq!(
         writer.append_orthogonal(&boundary, unchanged),
-        Err(StepError::Unsupported)
+        Err(StepError::InvalidGeometry)
     );
     let mut oversized = fixture().0;
     oversized.faces[0].rings[0] = vec![[0.; 3]; crate::orthogonal_boundary::box_void::MAX_WORK + 1];
@@ -173,6 +173,10 @@ fn only_conforming_collinear_subdivisions_can_be_written_as_closed_shells() {
         writer.append_orthogonal(&oversized, unchanged),
         Err(StepError::Limit)
     );
+    assert!(matches!(
+        crate::orthogonal_boundary::box_void::boundary_certificate(&oversized),
+        Err(crate::orthogonal::BooleanError::Limit)
+    ));
     let adjacent = boundary.faces.iter_mut().skip(1).find_map(|face| {
         let ring = &mut face.rings[0];
         let index = (0..ring.len()).find(|&i| ring[i] == b && ring[(i + 1) % ring.len()] == a)?;
@@ -200,7 +204,7 @@ fn a_retraced_same_face_spike_cannot_be_written_as_a_closed_box_boundary() {
     assert!(!boundary.supports_step());
     assert_eq!(
         write_orthogonal(&boundary, |p| p),
-        Err(StepError::Unsupported)
+        Err(StepError::InvalidGeometry)
     );
 }
 
@@ -213,6 +217,28 @@ fn resource_and_nonrectangular_refusals_keep_prior_members_and_typed_errors() {
         .collect::<Vec<_>>();
     let limited = Union::subtract(&[stock], &holes, 1e-7).unwrap().unwrap();
     let mut writer = Writer::new();
+    let limited_boundary = Boundary {
+        shell_count: limited.shell_count(),
+        faces: limited
+            .faces()
+            .iter()
+            .map(|face| crate::orthogonal_boundary::BoundaryFace {
+                component: 0,
+                rings: vec![
+                    face.vertices
+                        .iter()
+                        .map(|&i| limited.vertices()[i])
+                        .collect(),
+                ],
+                quad_indices: Vec::new(),
+                normal: face.normal,
+            })
+            .collect(),
+    };
+    assert_eq!(
+        writer.append_orthogonal(&limited_boundary, |p| p),
+        Err(StepError::Limit)
+    );
     assert_eq!(
         writer.append_planar_union(&limited, [0.; 3], [1., 0., 0.], [0., 1., 0.]),
         Err(StepError::Limit)
@@ -298,5 +324,122 @@ fn multiple_cavity_member_uses_one_slot_at_the_actual_compound_capacity() {
         members[1..]
             .iter()
             .all(|member| member.solid_count == 1 && member.volume_mm3 == 8.)
+    );
+}
+
+#[test]
+fn common_count_and_graph_failures_leave_the_writer_and_encoder_atomic() {
+    let (mut cavity, _) = fixture();
+    let mut writer = Writer::new();
+    let unchanged = |p: Point| p;
+    cavity.shell_count = 1;
+    assert_eq!(
+        writer.append_orthogonal(&cavity, unchanged),
+        Err(StepError::InvalidGeometry)
+    );
+    let mut file = StepFile::new();
+    let before = file.data.clone();
+    assert_eq!(
+        encode_orthogonal(&mut file, &cavity, &[], &[], &[], &unchanged).err(),
+        Some(StepError::InvalidGeometry)
+    );
+    assert_eq!(file.data, before);
+    cavity.shell_count = 2;
+    writer.append_orthogonal(&cavity, unchanged).unwrap();
+    let mut over_budget = fixture().0;
+    over_budget.shell_count = 1;
+    over_budget.faces[0].rings[0] =
+        vec![[0.; 3]; crate::orthogonal_boundary::box_void::MAX_WORK + 1];
+    assert_eq!(
+        writer.append_orthogonal(&over_budget, unchanged),
+        Err(StepError::Limit)
+    );
+    assert_eq!(
+        encode_orthogonal(&mut file, &over_budget, &[], &[], &[], &unchanged).err(),
+        Some(StepError::Limit)
+    );
+    assert_eq!(file.data, before);
+    let text = writer.finish().unwrap();
+    let read = read_analytic_compound(&text, 1e-7).unwrap();
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].volume_mm3, 1140.);
+}
+
+#[test]
+fn valid_but_unsupported_multiple_outer_shells_never_reach_the_encoder() {
+    let source = boolean(
+        &[
+            Box3 {
+                min: [0.; 3],
+                max: [2.; 3],
+            },
+            Box3 {
+                min: [4.; 3],
+                max: [6.; 3],
+            },
+        ],
+        &[],
+        Operation::Union,
+        1e-7,
+    )
+    .unwrap()
+    .unwrap();
+    let boundary = crate::orthogonal_boundary::build(source.quads()).unwrap();
+    let mut file = StepFile::new();
+    let before = file.data.clone();
+    assert_eq!(
+        encode_orthogonal(&mut file, &boundary, &[], &[], &[], &|p| p).err(),
+        Some(StepError::Unsupported)
+    );
+    assert_eq!(file.data, before);
+}
+
+#[test]
+fn pocket_and_drill_entry_points_preserve_typed_common_admission_failures() {
+    let stock = boolean(
+        &[Box3 {
+            min: [0.; 3],
+            max: [15., 10., 8.],
+        }],
+        &[],
+        Operation::Union,
+        1e-7,
+    )
+    .unwrap()
+    .unwrap();
+    let (mut boundary, _) = fixture();
+    boundary.shell_count = 1;
+    let mut writer = Writer::new();
+    let bore = OrthogonalThroughBore {
+        faces: [0, 1],
+        centers_mm: [[0.; 3]; 2],
+        radius_mm: 1.,
+    };
+    assert_eq!(
+        writer.append_pocketed_orthogonal(&stock, &boundary, &[], &|p| p),
+        Err(StepError::InvalidGeometry)
+    );
+    assert_eq!(
+        writer.append_drilled_orthogonal(&stock, &boundary, &[], &[bore], &|p| p),
+        Err(StepError::InvalidGeometry)
+    );
+    boundary.faces[0].rings[0] = vec![[0.; 3]; crate::orthogonal_boundary::box_void::MAX_WORK + 1];
+    assert_eq!(
+        writer.append_pocketed_orthogonal(&stock, &boundary, &[], &|p| p),
+        Err(StepError::Limit)
+    );
+    assert_eq!(
+        writer.append_drilled_orthogonal(&stock, &boundary, &[], &[bore], &|p| p),
+        Err(StepError::Limit)
+    );
+    let valid = crate::orthogonal_boundary::build(stock.quads()).unwrap();
+    writer
+        .append_pocketed_orthogonal(&stock, &valid, &[], &|p| p)
+        .unwrap();
+    assert_eq!(
+        read_analytic_compound(&writer.finish().unwrap(), 1e-7)
+            .unwrap()
+            .len(),
+        1
     );
 }

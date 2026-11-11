@@ -26,11 +26,25 @@ pub struct Boundary {
 impl Boundary {
     /// The STEP profile supports one shell or proved separated rectangular cavities.
     pub fn supports_step(&self) -> bool {
-        (self.shell_count == 1 || box_void::boundary(self).is_some())
-            && self.faces.len() >= 4
+        self.step_admission().unwrap_or(false)
+    }
+
+    pub(crate) fn step_admission(
+        &self,
+    ) -> std::result::Result<bool, crate::orthogonal::BooleanError> {
+        use crate::orthogonal::BooleanError;
+        box_void::validate_boundary_graph(self)?;
+        if self.shell_count != 1 {
+            match box_void::boundary_certificate(self) {
+                Ok(_) => {}
+                Err(BooleanError::Limit) => return Err(BooleanError::Limit),
+                Err(_) => return Ok(false),
+            }
+        }
+        Ok(self.faces.len() >= 4
             && self.faces.iter().all(|face| {
                 face.rings.iter().map(Vec::len).sum::<usize>() <= crate::polygon::MAX_VERTICES
-            })
+            }))
     }
 }
 
