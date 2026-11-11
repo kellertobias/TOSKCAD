@@ -15,6 +15,7 @@ use std::{
 };
 
 mod chamfer;
+mod concave;
 mod loft;
 mod miter_sweep;
 mod scale;
@@ -145,7 +146,7 @@ impl PlanarOperands {
         let topology = solid.rust_topology().ok_or_else(planar_unsupported)??;
         for (piece, faces) in solid
             .planar_convex_parts(&topology, policy)
-            .ok_or_else(planar_unsupported)?
+            .ok_or_else(planar_unsupported)??
         {
             self.pieces.push(piece);
             self.sources.push(SourcePart {
@@ -327,6 +328,15 @@ impl Solid {
         &self,
         topology: &TopologySnapshot,
         policy: GeometryPolicy,
+    ) -> Option<Result<Vec<ConvexPart>, GeometryError>> {
+        self.simple_concave_parts(topology, policy)
+            .or_else(|| self.planar_convex_parts_legacy(topology, policy).map(Ok))
+    }
+
+    fn planar_convex_parts_legacy(
+        &self,
+        topology: &TopologySnapshot,
+        policy: GeometryPolicy,
     ) -> Option<Vec<ConvexPart>> {
         let tolerance = policy.linear_tolerance_mm;
         if let Some((body, frame)) = self.planar_boolean_body() {
@@ -401,7 +411,7 @@ impl Solid {
             let topology = self.rust_topology().ok_or_else(planar_unsupported)??;
             pieces.extend(
                 self.planar_convex_parts(&topology, policy)
-                    .ok_or_else(planar_unsupported)?
+                    .ok_or_else(planar_unsupported)??
                     .into_iter()
                     .map(|(piece, _)| piece),
             );

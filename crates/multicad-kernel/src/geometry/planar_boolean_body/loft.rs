@@ -468,7 +468,10 @@ mod tests {
         let (side, frame) = attach(side_origin(feature, &origins[1][0]));
         assert_eq!(frame.origin_mm, [18., -2., 19.]);
         assert_eq!(frame.normal(), [0., -1., 0.]);
-        let parts = solid.planar_convex_parts(&topology, policy).unwrap();
+        let parts = solid
+            .planar_convex_parts(&topology, policy)
+            .unwrap()
+            .unwrap();
         assert_eq!(parts.len(), 2);
         let mapped = |piece: usize, face: usize| {
             parts[piece].1[face].map(|index| topology.elements[index].key)

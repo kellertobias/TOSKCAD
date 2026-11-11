@@ -294,7 +294,10 @@ mod tests {
         );
         assert_eq!(frame.origin_mm, [33., 5., 21.]);
         assert_eq!(frame.normal(), [0., -1., 0.]);
-        let pieces = solid.planar_convex_parts(&topology, policy).unwrap();
+        let pieces = solid
+            .planar_convex_parts(&topology, policy)
+            .unwrap()
+            .unwrap();
         let mapped =
             |piece: usize, face: usize| pieces[piece].1[face].map(|i| topology.elements[i].key);
         assert_eq!(mapped(0, 0), Some(start));

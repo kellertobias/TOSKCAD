@@ -119,7 +119,11 @@ impl Chart {
                 });
             }
         } else {
-            for (piece, ancestry) in solid.planar_convex_parts(&topology, policy)? {
+            let parts = match solid.planar_convex_parts(&topology, policy)? {
+                Ok(parts) => parts,
+                Err(cause) => return Some(Err(cause)),
+            };
+            for (piece, ancestry) in parts {
                 if let Err(cause) = self.append_piece(piece, &ancestry, operand, policy)? {
                     return Some(Err(cause));
                 }
