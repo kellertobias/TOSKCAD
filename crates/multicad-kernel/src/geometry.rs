@@ -926,6 +926,17 @@ impl Solid {
         bottom: Rational,
         top: Rational,
     ) -> Result<Self, GeometryError> {
+        self.try_subtract_rust_prism_through_cylinder(feature, circle, bottom, top)?
+            .ok_or_else(|| error("cylindrical cut", GeometryErrorKind::Input, "NotThrough"))
+    }
+
+    fn try_subtract_rust_prism_through_cylinder(
+        &self,
+        feature: u128,
+        circle: Circle,
+        bottom: Rational,
+        top: Rational,
+    ) -> Result<Option<Self>, GeometryError> {
         let Some((prism, frame)) = self.rust_prism_frame() else {
             return Err(error(
                 "cylindrical cut",
@@ -975,16 +986,20 @@ impl Solid {
         )
         .map_err(|reason| input(format!("Invalid translated cutter: {reason:?}")))?;
         let z = offset(2)?;
-        let next = prism
-            .subtract_cylinder(feature, circle, subtract(bottom, z)?, subtract(top, z)?)
-            .map_err(|reason| {
-                error(
-                    "cylindrical cut",
-                    GeometryErrorKind::Input,
-                    format!("{reason:?}"),
-                )
-            })?;
-        Self::from_placed_prism(next, frame, self.policy)
+        let next =
+            match prism.subtract_cylinder(feature, circle, subtract(bottom, z)?, subtract(top, z)?)
+            {
+                Ok(next) => next,
+                Err(multicad_rust_kernel::prism::PrismError::NotThrough) => return Ok(None),
+                Err(reason) => {
+                    return Err(error(
+                        "cylindrical cut",
+                        GeometryErrorKind::Input,
+                        format!("{reason:?}"),
+                    ));
+                }
+            };
+        Self::from_placed_prism(next, frame, self.policy).map(Some)
     }
 
     pub(crate) fn occt(&self) -> Result<&ffi::Shape, GeometryError> {
@@ -1230,15 +1245,15 @@ impl Solid {
                 if let Some(target) = self.polygon_prism() {
                     return Self::subtract_polygon_cylinder(target, tool, policy).map(Some);
                 }
-                if self.rust_prism().is_some() {
-                    return self
-                        .subtract_rust_prism_cylinder(
-                            tool.feature(),
-                            tool.circle(),
-                            tool.bottom(),
-                            tool.top(),
-                        )
-                        .map(Some);
+                if self.rust_prism().is_some()
+                    && let Some(result) = self.try_subtract_rust_prism_through_cylinder(
+                        tool.feature(),
+                        tool.circle(),
+                        tool.bottom(),
+                        tool.top(),
+                    )?
+                {
+                    return Ok(Some(result));
                 }
             }
             if let Some(result) = self.subtract_orthogonal_cylinder(other, policy) {

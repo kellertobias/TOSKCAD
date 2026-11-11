@@ -9,6 +9,42 @@ use multicad_kernel::{
 };
 
 #[test]
+fn general_subtract_routes_a_blind_cylinder_to_the_pocket_provider() {
+    let policy = GeometryPolicy::default();
+    let stock = Solid::box_solid([20., 16., 10.], policy).unwrap();
+    let tool = Solid::cylinder(
+        PlaneFrame {
+            origin: [10., 8., 7.],
+            ..Default::default()
+        },
+        2.,
+        4.,
+        policy,
+    )
+    .unwrap();
+    let cut = stock
+        .boolean(&tool, BooleanOperation::Subtract, policy)
+        .unwrap()
+        .unwrap();
+    assert!((cut.volume_mm3().unwrap() - (3200. - 12. * std::f64::consts::PI)).abs() < 1e-8);
+    assert_eq!(cut.faces().unwrap().len(), 8);
+    assert!(
+        cut.topology_snapshot(EntityId::new(), 0)
+            .unwrap()
+            .elements
+            .iter()
+            .all(|e| e.origins.is_empty())
+    );
+    let scratch = tempfile::tempdir().unwrap();
+    let path = scratch.path().join("blind-cylinder.step");
+    cut.write_step(&path).unwrap();
+    let reopened = Solid::read_step(&path, policy).unwrap();
+    assert!((reopened.volume_mm3().unwrap() - cut.volume_mm3().unwrap()).abs() < 1e-8);
+    assert_eq!(reopened.faces().unwrap().len(), 8);
+    assert_eq!(stock.volume_mm3().unwrap(), 3200.);
+}
+
+#[test]
 fn sequential_cuts_rebuild_anonymous_metadata_and_retain_public_floor_references() {
     let policy = GeometryPolicy::default();
     let owner = EntityId::new();
