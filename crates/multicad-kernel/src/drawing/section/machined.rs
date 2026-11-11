@@ -10,9 +10,10 @@ type Point = [f64; 2];
 type Segment = [Point; 2];
 
 pub(super) fn needs_analytic_section(solid: &Solid) -> bool {
-    solid
-        .orthogonal_body()
-        .is_some_and(|(body, _)| body.has_curved_cuts())
+    solid.herringbone_body().is_some()
+        || solid
+            .orthogonal_body()
+            .is_some_and(|(body, _)| body.has_curved_cuts())
         || solid
             .polygon_prism()
             .is_some_and(|body| !body.pockets.is_empty())
@@ -136,6 +137,15 @@ impl SectionOutput {
         }
         let policy = solid.geometry_policy();
         let tolerance = policy.linear_tolerance_mm;
+        if let Some(vectors) =
+            panel::section_herringbone(&DrawingSolid { solid, hatch }, self.options, depth)
+        {
+            let mut vectors = vectors?;
+            for vector in &mut vectors {
+                vector.source_index = source;
+            }
+            return self.extend(vectors);
+        }
         if solid.nonplanar_loft_body().is_some() {
             let vectors = loft::project(solid, self.options, source, depth)?;
             let hatch = hatch.filter(|h| h.pattern != HatchPattern::None);

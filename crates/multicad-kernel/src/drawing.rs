@@ -197,7 +197,7 @@ pub fn project_drawing(
         {
             return torus::project(input, frame, torus.radii_mm(), options);
         }
-        if solids.iter().any(|input| contains_herringbone(input.solid)) {
+        if !options.section_only && solids.iter().any(|input| contains_herringbone(input.solid)) {
             return Err(err(
                 GeometryErrorKind::Unsupported,
                 "Rust exact drawing projection for continuous herringbone gears is unavailable",

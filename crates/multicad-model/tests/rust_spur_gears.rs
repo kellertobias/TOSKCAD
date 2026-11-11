@@ -484,3 +484,127 @@ fn rust_spur_pair_certifies_authored_motion_and_reopens_with_the_same_proof() {
     near(proof.current_drive_angle_rad, 4_f64.to_radians(), 1e-12);
     assert!(proof.current_pose_checked);
 }
+
+#[test]
+fn rust_herringbone_sections_rotate_the_tooth_profile_and_preserve_the_bore() {
+    use multicad_core::{
+        drawings::{VectorCurve, VectorRole},
+        materials::HatchPattern,
+    };
+    use multicad_kernel::{
+        DrawingHatch, DrawingProjection, DrawingSolid, PlaneFrame, project_drawing,
+    };
+
+    let mut session = Session::new(Document::new("Herringbone drawing").unwrap()).unwrap();
+    let request = GearRequest::new(
+        "Chevron",
+        GearParameters {
+            family: GearFamily::Herringbone,
+            hand: GearHand::Right,
+            helix_angle: angle(25.),
+            face_width: length(8.),
+            bore_diameter: length(8.),
+            ..Default::default()
+        },
+    );
+    let prepared = model::prepare_gear(&session, session.revision(), actor(), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let model = Compiler {
+        omit_display: true,
+        ..Default::default()
+    }
+    .compile_with_backend(
+        session.document(),
+        session.revision(),
+        GeometryBackend::Rust,
+        None,
+    )
+    .unwrap();
+    let solid = model.solid(request.feature).unwrap();
+    let resolved = request
+        .parameters
+        .resolve_geometry(session.parameters())
+        .unwrap();
+    let model::ResolvedGearGeometry::Rotary(gear) = resolved else {
+        panic!("Expected a gear");
+    };
+    let cut = |depth, frame, window, hatch| {
+        project_drawing(
+            &[DrawingSolid { solid, hatch }],
+            DrawingProjection {
+                frame,
+                section_offset_mm: Some(depth),
+                section_only: true,
+                section_u_mm: window,
+                chord_tolerance_mm: 0.003,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    };
+
+    let end = cut(0., PlaneFrame::default(), None, None);
+    let middle = cut(4., PlaneFrame::default(), None, None);
+    assert_eq!(end.len(), middle.len());
+    assert!(middle.iter().all(|edge| edge.role == VectorRole::Section));
+    assert!(middle.iter().any(|edge| matches!(
+        edge.curve,
+        VectorCurve::Ellipse {
+            center: [0., 0.],
+            major_mm: 4.,
+            minor_mm: 4.,
+            ..
+        }
+    )));
+    let mut flank_count = 0;
+    let (sin, cos) = (gear.twist_rad_per_mm * 4.).sin_cos();
+    for (from, to) in end.iter().zip(&middle) {
+        if let (VectorCurve::BSpline { poles: a, .. }, VectorCurve::BSpline { poles: b, .. }) =
+            (&from.curve, &to.curve)
+        {
+            flank_count += 1;
+            for (&[x, y], &[u, v]) in a.iter().zip(b) {
+                near(u, x * cos - y * sin, 1e-8);
+                near(v, x * sin + y * cos, 1e-8);
+            }
+        }
+    }
+    assert_eq!(flank_count, 2 * gear.teeth as usize);
+    let mirrored = cut(
+        -4.,
+        PlaneFrame {
+            v: [0., -1., 0.],
+            ..Default::default()
+        },
+        None,
+        None,
+    );
+    assert_eq!(mirrored.len(), middle.len());
+    assert!(cut(9., PlaneFrame::default(), None, None).is_empty());
+
+    let hatch = DrawingHatch {
+        angle_rad: 0.,
+        spacing_mm: 1.,
+        line_width_mm: 0.15,
+        pattern: HatchPattern::Lines,
+    };
+    let clipped = cut(4., PlaneFrame::default(), Some([-1., 20.]), Some(hatch));
+    assert!(
+        clipped
+            .iter()
+            .flat_map(|edge| &edge.preview_mm)
+            .all(|[x, _]| *x >= -1.000001 && *x <= 20.000001)
+    );
+    let strokes: Vec<_> = clipped
+        .iter()
+        .filter(|edge| edge.role == VectorRole::Hatch)
+        .collect();
+    assert!(!strokes.is_empty());
+    for edge in strokes {
+        let VectorCurve::Line { a, b } = edge.curve else {
+            panic!("Expected a hatch line");
+        };
+        let [x, y]: [f64; 2] = std::array::from_fn(|i| a[i].midpoint(b[i]));
+        assert!(x.hypot(y) >= 3.9999);
+    }
+}

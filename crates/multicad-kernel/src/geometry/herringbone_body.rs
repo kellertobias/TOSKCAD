@@ -175,7 +175,24 @@ impl HerringboneBody {
             .collect()
     }
 
-    fn section(&self, frame: PlaneFrame, z: f64, outward: f64) -> ReferenceFrame {
+    pub(crate) fn section_rims(
+        &self,
+        frame: ReferenceFrame,
+    ) -> impl Iterator<Item = (Edge, AnalyticGeometry)> + '_ {
+        self.geometry
+            .profile()
+            .outline()
+            .iter()
+            .map(|edge| edge.edge)
+            .chain(self.geometry.profile().bore().map(Edge::Planar))
+            .map(move |edge| (edge, super::spur_gear_body::rim(edge, frame)))
+    }
+
+    pub(crate) fn profile(&self) -> &multicad_rust_kernel::spur_gear::Profile {
+        self.geometry.profile()
+    }
+
+    pub(crate) fn section(&self, frame: PlaneFrame, z: f64, outward: f64) -> ReferenceFrame {
         let (sin, cos) = self.geometry.phase_at(z).sin_cos();
         ReferenceFrame {
             origin_mm: position(frame, [0., 0., z]),

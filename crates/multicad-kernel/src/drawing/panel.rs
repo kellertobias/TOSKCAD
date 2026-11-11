@@ -32,10 +32,7 @@ pub(super) fn project_spur_gear(
         toward_viewer,
     };
     Some((|| {
-        use multicad_rust_kernel::spur_gear;
         let mut planar = Vec::new();
-        let mut vectors = Vec::new();
-        let mut points = 0usize;
         if let Some((rim, hidden)) = body.hub_end_on_rim(frame, dot(axis, toward_viewer) > 0.)
             && (!hidden || options.hidden_lines)
         {
@@ -44,70 +41,224 @@ pub(super) fn project_spur_gear(
                 curve: screen.curve(Some(rim))?,
             });
         }
-        for (edge, geometry) in body.end_on_rims(frame) {
-            match edge {
-                spur_gear::Edge::Planar(_) => {
-                    planar.push(Edge {
-                        hidden: false,
-                        curve: screen.curve(Some(geometry))?,
-                    });
-                }
-                spur_gear::Edge::Involute(flank) => {
-                    let failed = || {
-                        err(
-                            GeometryErrorKind::Limit,
-                            "Spur gear drawing exceeds its spline or point budget",
-                        )
-                    };
-                    let tolerance = options.chord_tolerance_mm / 2.;
-                    let spline = flank.cubic_spline(tolerance).map_err(|_| failed())?;
-                    let project = |p| screen.point(frame.point(p));
-                    let preview_mm: Vec<_> = edge
-                        .sample(tolerance, 0.3)
-                        .map_err(|_| failed())?
-                        .into_iter()
-                        .map(project)
-                        .collect();
-                    points = points.saturating_add(preview_mm.len());
-                    if points > options.maximum_points as usize {
-                        return Err(failed());
-                    }
-                    vectors.push(ProjectedVector {
-                        source_index: 0,
-                        role: VectorRole::Visible,
-                        curve: VectorCurve::BSpline {
-                            degree: 3,
-                            periodic: false,
-                            weights: vec![1.; spline.poles_mm.len()],
-                            poles: spline.poles_mm.into_iter().map(project).collect(),
-                            knots: spline.knots,
-                            multiplicities: spline
-                                .multiplicities
-                                .into_iter()
-                                .map(u32::from)
-                                .collect(),
-                            first: 0.,
-                            last: 1.,
-                        },
-                        preview_mm,
-                    });
-                }
-            }
+        publish_rotary_rims(
+            &screen,
+            body.end_on_rims(frame),
+            |p| screen.point(frame.point(p)),
+            planar,
+            options,
+        )
+    })())
+}
+
+pub(super) fn section_herringbone(
+    input: &DrawingSolid<'_>,
+    options: DrawingProjection,
+    depth: f64,
+) -> Option<Result<Vec<ProjectedVector>, GeometryError>> {
+    let (body, placement) = input.solid.herringbone_body()?;
+    let [u, v, toward_viewer] = planar::view_axes(options.frame);
+    let normal = placement.normal();
+    if dot(normal, u).hypot(dot(normal, v)) > 64. * f64::EPSILON || options.detail.is_some() {
+        return Some(Err(err(
+            GeometryErrorKind::Unsupported,
+            "Rust herringbone sections require a plane perpendicular to the gear axis",
+        )));
+    }
+    let alignment = dot(normal, toward_viewer);
+    let offset = std::array::from_fn(|i| placement.origin[i] - options.frame.origin[i]);
+    let z = (depth - dot(offset, toward_viewer)) / alignment;
+    let height = body.profile().height_mm();
+    let policy = input.solid.geometry_policy();
+    if z < -policy.linear_tolerance_mm || z > height + policy.linear_tolerance_mm {
+        return Some(Ok(Vec::new()));
+    }
+    let frame = body.section(placement, z.clamp(0., height), 1.);
+    let screen = Screen {
+        origin: options.frame.origin,
+        axes: [u, v],
+        toward_viewer,
+    };
+    let project = |[x, y]: Point| {
+        screen.point(std::array::from_fn(|i| {
+            frame.u[i].mul_add(x, frame.v[i].mul_add(y, frame.origin_mm[i]))
+        }))
+    };
+    Some((|| {
+        let clipped = options.section_u_mm.is_some() || options.section_v_mm.is_some();
+        let hatch = input
+            .hatch
+            .filter(|hatch| hatch.pattern != multicad_core::materials::HatchPattern::None);
+        let sampled = if clipped || hatch.is_some() {
+            Some(sample_gear_section(
+                body.profile(),
+                project,
+                alignment < 0.,
+                options,
+                hatch.is_some(),
+                policy,
+            )?)
+        } else {
+            None
+        };
+        if clipped {
+            return section::sampled::publish(
+                input,
+                sampled.expect("section window needs samples"),
+                options,
+            );
         }
-        let mut remaining = options;
-        remaining.maximum_curves = (options.maximum_curves as usize)
-            .checked_sub(vectors.len())
-            .filter(|count| *count >= planar.len())
-            .ok_or_else(|| {
-                err(
-                    GeometryErrorKind::Limit,
-                    "Spur gear drawing exceeds the curve budget",
-                )
-            })? as u32;
-        remaining.maximum_points -= points as u32;
-        vectors.extend(curved::publish(planar, remaining, 0)?);
+        let mut vectors = publish_rotary_rims(
+            &screen,
+            body.section_rims(frame),
+            project,
+            Vec::new(),
+            options,
+        )?;
+        for vector in &mut vectors {
+            vector.role = VectorRole::Section;
+        }
+        if let Some((hatch, rings)) = hatch.zip(sampled) {
+            let boundary: Vec<_> = rings
+                .into_iter()
+                .flat_map(|ring| {
+                    ring.iter()
+                        .zip(ring.iter().cycle().skip(1))
+                        .map(|(&a, &b)| [a, b])
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let mut curves = options.maximum_curves as usize - vectors.len();
+            let mut points = options.maximum_points as usize
+                - vectors
+                    .iter()
+                    .map(|vector| vector.preview_mm.len())
+                    .sum::<usize>();
+            vectors.extend(section::publish_hatch(
+                0,
+                hatch,
+                &boundary,
+                policy.linear_tolerance_mm,
+                &mut curves,
+                &mut points,
+                &mut multicad_rust_kernel::section_hatch::Budget::default(),
+            )?);
+        }
         Ok(vectors)
     })())
+}
+
+fn sample_gear_section(
+    profile: &multicad_rust_kernel::spur_gear::Profile,
+    project: impl Fn(Point) -> Point,
+    reverse: bool,
+    options: DrawingProjection,
+    hatched: bool,
+    policy: GeometryPolicy,
+) -> Result<Vec<Vec<Point>>, GeometryError> {
+    use multicad_rust_kernel::spur_gear::Edge;
+    let mut tolerance = options.chord_tolerance_mm / 2.;
+    if hatched {
+        tolerance = tolerance.min(policy.minimum_feature_mm / 4.);
+    }
+    let mut remaining = options.maximum_points as usize;
+    let mut append = |ring: &mut Vec<Point>, edge: Edge| {
+        let failed = || {
+            err(
+                GeometryErrorKind::Limit,
+                "Gear section exceeds its chord or point budget",
+            )
+        };
+        let mut samples = edge.sample(tolerance, 0.3).map_err(|_| failed())?;
+        samples.pop(); // The following edge supplies the shared endpoint.
+        remaining = remaining.checked_sub(samples.len()).ok_or_else(failed)?;
+        ring.extend(samples.into_iter().map(&project));
+        Ok::<(), GeometryError>(())
+    };
+    let mut outline = Vec::new();
+    for edge in profile.outline() {
+        append(&mut outline, edge.edge)?;
+    }
+    let mut rings = vec![outline];
+    if let Some(bore) = profile.bore() {
+        let mut hole = Vec::new();
+        append(&mut hole, Edge::Planar(bore))?;
+        rings.push(hole);
+    }
+    if reverse {
+        rings.iter_mut().for_each(|ring| ring.reverse());
+    }
+    Ok(rings)
+}
+
+fn publish_rotary_rims(
+    screen: &Screen,
+    rims: impl Iterator<Item = (multicad_rust_kernel::spur_gear::Edge, AnalyticGeometry)>,
+    project: impl Fn(Point) -> Point,
+    mut planar: Vec<Edge>,
+    options: DrawingProjection,
+) -> Result<Vec<ProjectedVector>, GeometryError> {
+    use multicad_rust_kernel::spur_gear;
+    let mut vectors = Vec::new();
+    let mut points = 0usize;
+    for (edge, geometry) in rims {
+        match edge {
+            spur_gear::Edge::Planar(_) => {
+                planar.push(Edge {
+                    hidden: false,
+                    curve: screen.curve(Some(geometry))?,
+                });
+            }
+            spur_gear::Edge::Involute(flank) => {
+                let failed = || {
+                    err(
+                        GeometryErrorKind::Limit,
+                        "Gear drawing exceeds its spline or point budget",
+                    )
+                };
+                let tolerance = options.chord_tolerance_mm / 2.;
+                let spline = flank.cubic_spline(tolerance).map_err(|_| failed())?;
+                let preview_mm: Vec<_> = edge
+                    .sample(tolerance, 0.3)
+                    .map_err(|_| failed())?
+                    .into_iter()
+                    .map(&project)
+                    .collect();
+                points = points.saturating_add(preview_mm.len());
+                if points > options.maximum_points as usize {
+                    return Err(failed());
+                }
+                vectors.push(ProjectedVector {
+                    source_index: 0,
+                    role: VectorRole::Visible,
+                    curve: VectorCurve::BSpline {
+                        degree: 3,
+                        periodic: false,
+                        weights: vec![1.; spline.poles_mm.len()],
+                        poles: spline.poles_mm.into_iter().map(&project).collect(),
+                        knots: spline.knots,
+                        multiplicities: spline.multiplicities.into_iter().map(u32::from).collect(),
+                        first: 0.,
+                        last: 1.,
+                    },
+                    preview_mm,
+                });
+            }
+        }
+    }
+    let mut remaining = options;
+    remaining.maximum_curves = (options.maximum_curves as usize)
+        .checked_sub(vectors.len())
+        .filter(|count| *count >= planar.len())
+        .ok_or_else(|| {
+            err(
+                GeometryErrorKind::Limit,
+                "Gear drawing exceeds the curve budget",
+            )
+        })? as u32;
+    remaining.maximum_points -= points as u32;
+    vectors.extend(curved::publish(planar, remaining, 0)?);
+    Ok(vectors)
 }
 
 pub(super) fn project(

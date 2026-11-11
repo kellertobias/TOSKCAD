@@ -219,7 +219,7 @@ pub(super) fn section(
             ring
         })
         .collect();
-    transverse::publish(input, rings, options)
+    section::sampled::publish(input, rings, options)
 }
 
 struct Silhouette {
