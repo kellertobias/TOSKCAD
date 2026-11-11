@@ -1528,15 +1528,22 @@ fn rust_stdio_imports_updates_and_reopens_kicad_with_an_embedded_component() {
 
 #[test]
 fn rust_stdio_reopens_the_24_36_herringbone_pair_and_checks_the_current_drive() {
-    twisted_pair_stdio_roundtrip("herringbone");
+    twisted_pair_stdio_roundtrip("herringbone", false);
 }
 
 #[test]
 fn rust_stdio_reopens_the_24_36_helical_pair_and_checks_the_current_drive() {
-    twisted_pair_stdio_roundtrip("helical");
+    twisted_pair_stdio_roundtrip("helical", false);
 }
 
-fn twisted_pair_stdio_roundtrip(family: &str) {
+#[test]
+fn rust_stdio_reopens_the_24_36_hubbed_twisted_pairs_and_checks_the_current_drive() {
+    for family in ["helical", "herringbone"] {
+        twisted_pair_stdio_roundtrip(family, true);
+    }
+}
+
+fn twisted_pair_stdio_roundtrip(family: &str, hub: bool) {
     let directory = tempfile::tempdir().unwrap();
     let project = directory.path().join(format!("continuous-{family}.tcd"));
     let arguments = [
@@ -1556,7 +1563,10 @@ fn twisted_pair_stdio_roundtrip(family: &str) {
             "helix_angle":scalar(15.,"deg"),
             "face_width":length(4.),
             "bore_diameter":length(8.),
-            "backlash":length(0.05)
+            "backlash":length(0.05),
+            "hub":if hub {
+                json!({"diameter":length(16.),"axial_start":length(-2.),"axial_end":length(6.)})
+            } else { Value::Null }
         })
     };
     let mut client = Client::start(&arguments);
@@ -1606,6 +1616,8 @@ fn twisted_pair_stdio_roundtrip(family: &str) {
         .into_iter()
         .enumerate()
     {
+        let volume = volume + if hub { 192. * PI } else { 0. };
+        let faces = faces + if hub { 4 } else { 0 };
         let file_name = format!("{family}-{index}.step");
         let exported = reopened.ok(
             "export_step",

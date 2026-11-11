@@ -1176,6 +1176,11 @@ mod tests {
                 helix_angle: model::angle(25.),
                 face_width: length(8.),
                 bore_diameter: length(8.),
+                hub: Some(model::GearHub {
+                    diameter: length(16.),
+                    axial_start: length(-2.),
+                    axial_end: length(10.),
+                }),
                 ..Default::default()
             },
         );
@@ -1246,6 +1251,9 @@ mod tests {
         };
         assert!(vectors.iter().any(|edge| edge.role == VectorRole::Visible));
         assert!(vectors.iter().any(|edge| edge.role == VectorRole::Hidden));
+        assert!(vectors.iter().any(|edge| edge.role == VectorRole::Visible
+            && matches!(edge.curve, VectorCurve::Ellipse { major_mm, minor_mm, .. }
+                if (major_mm-8.).abs() < 1e-8 && (minor_mm-8.).abs() < 1e-8)));
         let ViewEvaluation::Ready { vectors, .. } = &result.views[&retained] else {
             panic!("{:?}", result.views[&retained]);
         };
