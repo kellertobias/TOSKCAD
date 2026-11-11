@@ -172,3 +172,17 @@ fn only_conforming_collinear_subdivisions_can_be_written_as_closed_shells() {
     assert_eq!(read[0].edges_mm.len(), 25);
     assert_eq!(read[0].volume_mm3, 1140.);
 }
+
+#[test]
+fn a_retraced_same_face_spike_cannot_be_written_as_a_closed_box_boundary() {
+    let (mut boundary, _) = fixture();
+    let a = boundary.faces[0].rings[0][0];
+    let b = boundary.faces[0].rings[0][1];
+    let midpoint = std::array::from_fn(|i| a[i].midpoint(b[i]));
+    boundary.faces[0].rings[0].splice(1..1, [midpoint, a]);
+    assert!(!boundary.supports_step());
+    assert_eq!(
+        write_orthogonal(&boundary, |p| p),
+        Err(StepError::Unsupported)
+    );
+}
