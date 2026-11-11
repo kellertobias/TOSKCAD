@@ -437,7 +437,7 @@ fn native_worker_preserves_repeated_run_intents_and_current_scope_provenance() {
 #[test]
 fn rust_worker_requires_its_own_current_preview_and_attributes_each_run() {
     let f = Fixture::new();
-    let native = f.preview();
+    let default = f.preview();
     let worker =
         ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
     let document = f.session.document();
@@ -452,8 +452,18 @@ fn rust_worker_requires_its_own_current_preview_and_attributes_each_run() {
     };
     assert!(preview.can_run());
     assert_eq!(preview.requested_by, preview_actor);
-    assert_ne!(preview.key, native.key);
-    for (revision, key) in [(revision, &native.key), (revision + 1, &preview.key)] {
+    if multicad_kernel::OCCT_LINKED {
+        assert_ne!(preview.key, default.key);
+    } else {
+        assert_eq!(preview.key, default.key);
+    }
+    let mut unpreviewed = preview.key.clone();
+    unpreviewed.plan_hash = ContentHash::of(b"unpreviewed export plan");
+    let mut stale = vec![(revision, &unpreviewed), (revision + 1, &preview.key)];
+    if multicad_kernel::OCCT_LINKED {
+        stale.push((revision, &default.key));
+    }
+    for (revision, key) in stale {
         worker
             .run(document, revision, key, root.path(), actor())
             .unwrap();
