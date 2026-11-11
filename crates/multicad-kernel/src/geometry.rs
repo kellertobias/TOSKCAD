@@ -859,17 +859,50 @@ impl Solid {
                 "Expected a Rust prism",
             ));
         };
-        if frame != PlaneFrame::default() {
+        if frame.u != PlaneFrame::default().u || frame.v != PlaneFrame::default().v {
             return Err(error(
                 "cylindrical cut",
                 GeometryErrorKind::Unsupported,
-                "Rust through-bores currently require an unplaced prism",
+                "World-axial through-bores require a prism with an aligned source chart",
             ));
         }
         self.policy.point([0., 0., bottom.as_f64()])?;
         self.policy.point([0., 0., top.as_f64()])?;
+        // Translate exact world operands into the retained source chart. Do not
+        // use tolerance-based rational fitting here: even a very shallow floor
+        // must keep a short cutter from being accepted as a through-bore.
+        let offset = |axis: usize| {
+            multicad_rust_kernel::parse_length_mm(&format!("{} mm", frame.origin[axis])).map_err(
+                |_| {
+                    error(
+                        "cylindrical cut",
+                        GeometryErrorKind::Unsupported,
+                        "Prism translation cannot be represented in the exact length domain",
+                    )
+                },
+            )
+        };
+        let subtract = |a: Rational, b: Rational| {
+            a.checked_sub(b).map_err(|_| {
+                error(
+                    "cylindrical cut",
+                    GeometryErrorKind::Limit,
+                    "Translated cutter exceeds the exact arithmetic budget",
+                )
+            })
+        };
+        let center = circle.center();
+        let circle = Circle::new(
+            [
+                subtract(center[0], offset(0)?)?,
+                subtract(center[1], offset(1)?)?,
+            ],
+            circle.radius(),
+        )
+        .map_err(|reason| input(format!("Invalid translated cutter: {reason:?}")))?;
+        let z = offset(2)?;
         let next = prism
-            .subtract_cylinder(feature, circle, bottom, top)
+            .subtract_cylinder(feature, circle, subtract(bottom, z)?, subtract(top, z)?)
             .map_err(|reason| {
                 error(
                     "cylindrical cut",
@@ -877,7 +910,7 @@ impl Solid {
                     format!("{reason:?}"),
                 )
             })?;
-        Self::from_rust_prism(next, self.policy)
+        Self::from_placed_prism(next, frame, self.policy)
     }
 
     pub(crate) fn occt(&self) -> Result<&ffi::Shape, GeometryError> {
