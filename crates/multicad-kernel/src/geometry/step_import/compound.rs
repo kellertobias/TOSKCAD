@@ -188,12 +188,12 @@ impl Solid {
         }
         let mut leaves = Vec::with_capacity(readbacks.len());
         self.step_leaf_members(&mut leaves);
-        let planar_shells = |leaf: &Solid| {
+        let planar_members = |leaf: &Solid| {
             leaf.planar_boolean_body()
-                .map_or(1, |(body, _)| body.geometry.shell_count())
+                .map_or(1, |(body, _)| body.geometry.solid_count())
         };
         if readbacks.iter().all(|(_, profile)| profile.is_none())
-            && leaves.iter().all(|leaf| planar_shells(leaf) == 1)
+            && leaves.iter().all(|leaf| planar_members(leaf) == 1)
         {
             let bodies: Vec<_> = leaves
                 .iter()
@@ -203,11 +203,12 @@ impl Solid {
             return match_compound(topology, &readbacks, tolerance, Some(&bodies));
         }
 
-        // A planar leaf can contribute several disconnected shells. A
-        // helical cut can add a STEP seam and split its exact source edges.
+        // A planar leaf can contribute several disconnected solids. Internal
+        // void shells belong to their exterior solid's single STEP record.
+        // A helical cut can add a seam and split its exact source edges.
         let mut remaining = readbacks;
         for leaf in leaves {
-            let Some((members, rest)) = remaining.split_at_checked(planar_shells(leaf)) else {
+            let Some((members, rest)) = remaining.split_at_checked(planar_members(leaf)) else {
                 return false;
             };
             if !match_leaf(leaf, members, tolerance) {
@@ -251,7 +252,7 @@ impl Solid {
                                 .map(|count| count as usize)
                                 .map_err(|_| ReadError::Invalid)
                         },
-                        |(body, _)| Ok(body.geometry.shell_count()),
+                        |(body, _)| Ok(body.geometry.solid_count()),
                     )?;
                     member_counts.push(count);
                     expected.extend((0..count).map(|_| ExpectedStepMember::Analytic));

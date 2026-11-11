@@ -449,6 +449,309 @@ fn rust_box_cut_keeps_an_enclosed_void_inside_one_solid() {
 }
 
 #[test]
+fn rust_box_void_exports_one_logical_solid_after_saved_pose_and_dimension_edits() {
+    use multicad_core::{
+        commands::Request,
+        constraint_sketch::Dimension,
+        document::{Entity, EntityData, Link, Mutation},
+        exchange::{OutputSubject, Scope, ScopeRoot},
+        parameters::BoundExpression,
+    };
+    use multicad_model::export::verify_rust_step_shape;
+    for posed in [false, true] {
+        let mut document = Document::new("Saved enclosed cavity").unwrap();
+        let width = Entity::new(
+            "width",
+            EntityData::Parameter {
+                expression: "15".into(),
+                unit: "mm".into(),
+                exposed: true,
+                inputs: vec![],
+            },
+        );
+        let width_id = width.id;
+        document.insert(width).unwrap();
+        let mut session = Session::new(document).unwrap();
+        let outer = PrimitiveRequest::new(
+            "Exterior",
+            PrimitiveParameters::Box {
+                size: [
+                    Dimension::Expression {
+                        expression: BoundExpression::bind(
+                            session.document(),
+                            "=$width",
+                            "mm",
+                            None,
+                        )
+                        .unwrap(),
+                    },
+                    length(10.),
+                    length(8.),
+                ],
+                frame: Default::default(),
+            },
+        );
+        session
+            .commit(
+                model::prepare_primitive(&session, session.revision(), actor(), &outer)
+                    .unwrap()
+                    .prepared,
+            )
+            .unwrap();
+        let mut base = BodyInput {
+            body: outer.body,
+            producer: outer.feature,
+        };
+        let mut inner = box_at(&mut session, "Enclosed cavity", [5., 4., 3.], [2., 3., 1.]);
+        if posed {
+            for input in [&mut base, &mut inner] {
+                let transform = model::TransformRequest::new(
+                    input.clone(),
+                    model::NumericTransform {
+                        translation: [17., -3., 21.].map(length),
+                        pivot: [0.; 3].map(length),
+                        axis: [1., 2., 3.],
+                        angle: model::angle(37.),
+                    },
+                );
+                session
+                    .commit(
+                        model::prepare_transform(&session, session.revision(), actor(), &transform)
+                            .unwrap()
+                            .prepared,
+                    )
+                    .unwrap();
+                input.producer = transform.feature;
+            }
+        }
+        let cut = combine(&mut session, Operation::Cut, base, inner.clone());
+        let initial = compile(&session, GeometryBackend::Rust);
+        let topology = &initial.snapshot().shapes[&cut.producer].topology;
+        let captures: Vec<_> = topology
+            .elements
+            .iter()
+            .filter(|element| element.key.kind == TopologyKind::Face)
+            .map(|element| GeometryIntent::capture(topology, element.key).unwrap())
+            .collect();
+        assert_eq!(captures.len(), 12);
+        let datums: Vec<_> = topology
+            .elements
+            .iter()
+            .filter(|element| element.key.kind == TopologyKind::Face)
+            .map(|element| {
+                let mut intent = GeometryIntent::capture(topology, element.key).unwrap();
+                let anchor = element
+                    .frames
+                    .first()
+                    .expect("authored cavity face frame")
+                    .origin
+                    .clone();
+                intent.origins = BTreeSet::from([anchor.clone()]);
+                intent.boundary = None;
+                intent.attachment = Some(Attachment {
+                    anchor,
+                    offset_mm: [0.; 3],
+                    angle_rad: 0.,
+                });
+                Mutation::Insert(Entity::new(
+                    "Cavity face datum",
+                    EntityData::Plane {
+                        origin_mm: [0.; 3],
+                        normal: [0., 0., 1.],
+                        anchor: Some(Link {
+                            target: cut.producer,
+                            role: "face_attachment".into(),
+                            geometry: Some(intent),
+                        }),
+                    },
+                ))
+            })
+            .collect();
+        session
+            .apply(Request {
+                expected_revision: session.revision(),
+                actor: actor(),
+                label: "Attach cavity boundary datums".into(),
+                edits: datums,
+            })
+            .unwrap();
+        let set = EntityId::new();
+        session
+            .commit(
+                prepare_set(
+                    &session,
+                    session.revision(),
+                    actor(),
+                    set,
+                    "Cavity STEP",
+                    &SetDefinition {
+                        scope: Scope {
+                            root: ScopeRoot::Explicit {
+                                entities: vec![cut.body],
+                            },
+                            tags: None,
+                        },
+                        ..Default::default()
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        session = reopen(&session);
+        for width in [15., 20.] {
+            if width == 20. {
+                let mut parameter = session.document().get(width_id).unwrap().clone();
+                let EntityData::Parameter { expression, .. } = &mut parameter.data else {
+                    unreachable!()
+                };
+                *expression = "20".into();
+                session
+                    .apply(Request {
+                        expected_revision: session.revision(),
+                        actor: actor(),
+                        label: "Resize cavity exterior".into(),
+                        edits: vec![Mutation::Replace(parameter)],
+                    })
+                    .unwrap();
+            }
+            let model = compile(&session, GeometryBackend::Rust);
+            let shape = &model.snapshot().shapes[&cut.producer];
+            let solid = model.solid(cut.body).unwrap();
+            let expected = width * 80. - 60.;
+            near(solid.volume_mm3().unwrap(), expected);
+            assert_eq!(solid.solid_count().unwrap(), 1);
+            assert!(model.snapshot().references.all_resolved());
+            for capture in &captures {
+                assert!(matches!(
+                    references::resolve(capture, &shape.topology, session.revision()),
+                    Resolution::Resolved { .. }
+                ));
+            }
+            near(
+                solid
+                    .rust_occupied_overlap_volume(
+                        model.solid(inner.producer).unwrap(),
+                        Default::default(),
+                    )
+                    .unwrap(),
+                0.,
+            );
+            let before = session.document().clone();
+            let revision = session.revision();
+            let worker =
+                ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust)
+                    .unwrap();
+            worker
+                .preview(session.document(), revision, set, actor())
+                .unwrap();
+            let ExportResult::Preview(preview) = reply(&worker).result else {
+                panic!("expected cavity preview")
+            };
+            let preview = preview.unwrap();
+            assert!(preview.can_run(), "{preview:?}");
+            let [artifact] = preview.artifacts.as_slice() else {
+                panic!("one logical cavity Part")
+            };
+            assert_eq!(artifact.solid_count, 1);
+            let temporary = tempfile::tempdir().unwrap();
+            worker
+                .run(
+                    session.document(),
+                    revision,
+                    &preview.key,
+                    temporary.path(),
+                    actor(),
+                )
+                .unwrap();
+            let ExportResult::Run(run) = reply(&worker).result else {
+                panic!("expected cavity publication")
+            };
+            let run = run.unwrap();
+            let [file] = run.files.as_slice() else {
+                panic!("one cavity STEP artifact")
+            };
+            assert_eq!(file.artifact.solid_count, 1);
+            assert_eq!(file.artifact.producer, cut.producer);
+            let OutputSubject::Part(subject) = &file.artifact.output.subject else {
+                panic!("expected cavity Part attribution")
+            };
+            assert_eq!(subject.part, cut.body);
+            let path = Path::new(&run.directory).join(&file.artifact.output.filename);
+            let source = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(source.matches("BREP_WITH_VOIDS(").count(), 1);
+            assert_eq!(source.matches("CLOSED_SHELL(").count(), 3);
+            near(
+                verify_rust_step_shape(&path, solid, shape, 1e-7).unwrap(),
+                expected,
+            );
+            let imported =
+                Solid::import_rust_step(&source, EntityId::new(), Default::default()).unwrap();
+            near(imported.volume_mm3().unwrap(), expected);
+            assert_eq!(imported.solid_count().unwrap(), 1);
+            near(
+                imported
+                    .rust_occupied_overlap_volume(
+                        model.solid(inner.producer).unwrap(),
+                        Default::default(),
+                    )
+                    .unwrap(),
+                0.,
+            );
+            imported
+                .manufacturing_mesh_with_receipt(Default::default())
+                .unwrap();
+            if multicad_kernel::OCCT_LINKED {
+                let native = Solid::read_step(&path, Default::default()).unwrap();
+                near(native.volume_mm3().unwrap(), expected);
+                assert_eq!(native.solid_count().unwrap(), 1);
+                assert!(
+                    native
+                        .boolean(
+                            &Solid::read_step(
+                                &{
+                                    let probe = temporary.path().join("probe.step");
+                                    model
+                                        .solid(inner.producer)
+                                        .unwrap()
+                                        .write_step(&probe)
+                                        .unwrap();
+                                    probe
+                                },
+                                Default::default()
+                            )
+                            .unwrap(),
+                            multicad_kernel::BooleanOperation::Intersect,
+                            Default::default()
+                        )
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            assert_eq!(session.document(), &before);
+            assert_eq!(session.revision(), revision);
+        }
+        session.undo(session.revision(), actor()).unwrap();
+        near(
+            compile(&session, GeometryBackend::Rust)
+                .solid(cut.body)
+                .unwrap()
+                .volume_mm3()
+                .unwrap(),
+            1140.,
+        );
+        session.redo(session.revision(), actor()).unwrap();
+        near(
+            compile(&session, GeometryBackend::Rust)
+                .solid(cut.body)
+                .unwrap()
+                .volume_mm3()
+                .unwrap(),
+            1540.,
+        );
+    }
+}
+
+#[test]
 fn rust_box_boolean_refuses_contact_only_intersection_and_disconnected_join_before_commit() {
     for (operation, origin, message) in [
         (Operation::Intersect, [2., 0., 0.], "removed all material"),

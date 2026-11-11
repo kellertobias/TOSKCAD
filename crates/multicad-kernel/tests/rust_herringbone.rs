@@ -31,6 +31,124 @@ fn specification(teeth: u32) -> InvoluteGear {
 }
 
 #[test]
+fn mixed_twisted_compounds_keep_cavity_shells_in_one_logical_step_member() {
+    use multicad_kernel::{
+        BooleanOperation, PlaneFrame,
+        rust_kernel::{Rational, step_read},
+    };
+    let policy = GeometryPolicy::default();
+    let stock = |size: [i64; 3], origin| {
+        Solid::rust_box(
+            EntityId::new().uuid_bits(),
+            size.map(|n| Rational::new(n, 1).unwrap()),
+            PlaneFrame {
+                origin,
+                ..Default::default()
+            },
+            policy,
+        )
+        .unwrap()
+    };
+    for pose in [
+        RigidTransform {
+            translation_mm: [80., 60., 20.],
+            ..Default::default()
+        },
+        RigidTransform {
+            rotation: [[0.8, -0.36, 0.48], [0.6, 0.48, -0.64], [0., 0.8, 0.6]],
+            translation_mm: [80., 60., 20.],
+        },
+    ] {
+        let exterior = stock([15, 10, 8], [0.; 3]).transformed(pose).unwrap();
+        let probe = stock([5, 4, 3], [2., 3., 1.]).transformed(pose).unwrap();
+        let cavity = exterior
+            .rust_subtract_planar_tools(&[&probe], EntityId::new(), policy)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cavity.solid_count().unwrap(), 1);
+        assert!((cavity.volume_mm3().unwrap() - 1140.).abs() < 1e-7);
+        assert_eq!(
+            cavity.rust_occupied_overlap_volume(&probe, policy).unwrap(),
+            0.
+        );
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("cavity.step");
+        cavity.write_step(&path).unwrap();
+        let source = std::fs::read_to_string(&path).unwrap();
+        let decoded = step_read::read_analytic_compound_with_helical_cuts(&source, 1e-7).unwrap();
+        assert_eq!(decoded.len(), 1);
+        assert!(cavity.step_readback_matches(
+            &cavity.topology_snapshot(EntityId::new(), 0).unwrap(),
+            &decoded,
+            2e-7
+        ));
+        let imported = Solid::import_rust_step(&source, EntityId::new(), policy).unwrap();
+        assert!((imported.volume_mm3().unwrap() - 1140.).abs() < 1e-7);
+        assert_eq!(
+            imported
+                .rust_occupied_overlap_volume(&probe, policy)
+                .unwrap(),
+            0.
+        );
+        let ordinary = stock([2; 3], [140., 0., 0.]);
+        let gear =
+            Solid::rust_herringbone_named(specification(24), EntityId::new(), policy).unwrap();
+        let compound =
+            Solid::compound_named(&[&cavity, &ordinary, &gear], EntityId::new(), policy).unwrap();
+        let mixed = temporary.path().join("mixed-void-gear.step");
+        compound.write_step(&mixed).unwrap();
+        let source = std::fs::read_to_string(&mixed).unwrap();
+        assert_eq!(source.matches("BREP_WITH_VOIDS(").count(), 1);
+        assert_eq!(source.matches("MANIFOLD_SOLID_BREP(").count(), 2);
+        let (count, volume, bounds) = compound
+            .verify_twisted_step_compound(&source, 1e-7)
+            .unwrap()
+            .unwrap();
+        assert_eq!(count, 3);
+        assert!((volume - compound.volume_mm3().unwrap()).abs() < 1e-5);
+        let expected = compound.bounds().unwrap();
+        assert!(
+            bounds
+                .into_iter()
+                .flatten()
+                .zip(expected.min.into_iter().chain(expected.max))
+                .all(|(a, b)| (a - b).abs() < 1e-6)
+        );
+        let void_shell = source
+            .lines()
+            .find(|line| line.contains("ORIENTED_CLOSED_SHELL("))
+            .unwrap();
+        assert!(void_shell.contains(".F."));
+        let inverted = source.replacen(void_shell, &void_shell.replacen(".F.", ".T.", 1), 1);
+        assert!(
+            compound
+                .verify_twisted_step_compound(&inverted, 1e-7)
+                .unwrap()
+                .is_err()
+        );
+        if multicad_kernel::OCCT_LINKED {
+            let native = multicad_kernel::Shape::read_step(&mixed).unwrap();
+            assert!(native.valid().unwrap());
+            assert_eq!(Solid::step_solids(&mixed).unwrap().len(), 3);
+            assert!((native.volume().unwrap() - volume).abs() < 2e-4);
+            let probe_path = temporary.path().join("probe.step");
+            probe.write_step(&probe_path).unwrap();
+            assert!(
+                Solid::read_step(&path, policy)
+                    .unwrap()
+                    .boolean(
+                        &Solid::read_step(&probe_path, policy).unwrap(),
+                        BooleanOperation::Intersect,
+                        policy
+                    )
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+}
+
+#[test]
 fn helical_gears_exchange_both_hands_with_placed_bores_and_solid_caps() {
     let transform = RigidTransform {
         rotation: [[0.8, 0., 0.6], [0., 1., 0.], [-0.6, 0., 0.8]],
