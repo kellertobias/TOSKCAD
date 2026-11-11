@@ -126,7 +126,7 @@ fn verify(
     )
 }
 
-type StepMetrics = (u32, f64, [[f64; 3]; 2]);
+type StepMetrics = multicad_kernel::StepCompoundMetrics;
 
 fn verify_step_dimensions(
     producer: EntityId,
@@ -242,6 +242,9 @@ fn read_rust_step(
             format!("Rust STEP readback rejected the geometry: {e:?}"),
         )
     };
+    if let Some(proof) = solid.verify_twisted_step_compound(source, tolerance) {
+        return proof.map_err(readback_error);
+    }
     if let Some(proof) = solid
         .verify_helical_step(source)
         .or_else(|| solid.verify_herringbone_step(source))

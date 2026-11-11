@@ -500,6 +500,9 @@ pub struct Bounds {
     pub min: [f64; 3],
     pub max: [f64; 3],
 }
+
+/// STEP solid count, decoded volume in mm³ and world bounds in mm.
+pub type StepCompoundMetrics = (u32, f64, [[f64; 3]; 2]);
 #[derive(Clone, Debug, PartialEq)]
 pub struct Face {
     /// Evaluation-local ordinal, never a persistent topology reference.
@@ -2060,9 +2063,7 @@ impl Solid {
             SolidBody::Helical(body, frame) => {
                 standalone && body.supports_step(*frame, self.policy)
             }
-            SolidBody::Herringbone(body, frame) => {
-                standalone && body.supports_step(*frame, self.policy)
-            }
+            SolidBody::Herringbone(body, frame) => body.supports_step(*frame, self.policy),
             SolidBody::HelicalTubeCut(body, frame) => {
                 multicad_rust_kernel::step::supports_helical_tube_cut(
                     body.cut,

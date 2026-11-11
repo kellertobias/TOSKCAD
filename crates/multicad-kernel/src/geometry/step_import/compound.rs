@@ -218,6 +218,104 @@ impl Solid {
         remaining.is_empty()
     }
 
+    /// Verify a flat compound containing authored twisted gears and analytic
+    /// members, preserving the STEP writer's order and source placements.
+    pub fn verify_twisted_step_compound(
+        &self,
+        input: &str,
+        tolerance: f64,
+    ) -> Option<std::result::Result<StepCompoundMetrics, ReadError>> {
+        use step_read::{ExpectedStepMember, VerifiedStepMember};
+        self.rust_compound()?;
+        let mut leaves = Vec::new();
+        self.step_leaf_members(&mut leaves);
+        if !leaves.iter().any(|leaf| leaf.herringbone_body().is_some()) {
+            return None;
+        }
+        Some((|| {
+            let mut expected = Vec::new();
+            let mut member_counts = Vec::with_capacity(leaves.len());
+            for leaf in &leaves {
+                if let Some((body, frame)) = leaf.herringbone_body() {
+                    member_counts.push(1);
+                    expected.push(ExpectedStepMember::TwistedGear {
+                        gear: &body.geometry,
+                        origin: frame.origin,
+                        u: frame.u,
+                        v: frame.v,
+                    });
+                } else {
+                    let count = leaf.planar_boolean_body().map_or_else(
+                        || {
+                            leaf.solid_count()
+                                .map(|count| count as usize)
+                                .map_err(|_| ReadError::Invalid)
+                        },
+                        |(body, _)| Ok(body.geometry.shell_count()),
+                    )?;
+                    member_counts.push(count);
+                    expected.extend((0..count).map(|_| ExpectedStepMember::Analytic));
+                }
+            }
+            let mut decoded =
+                step_read::verify_authored_compound(input, &expected, tolerance)?.into_iter();
+            let mut result = (0_u32, 0_f64, [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]]);
+            for (leaf, member_count) in leaves.into_iter().zip(member_counts) {
+                let (count, volume, bounds) = if leaf.herringbone_body().is_some() {
+                    let Some(VerifiedStepMember::TwistedGear { volume_mm3 }) = decoded.next()
+                    else {
+                        return Err(ReadError::Invalid);
+                    };
+                    let bounds = leaf.bounds().map_err(|_| ReadError::Invalid)?;
+                    (1, volume_mm3, [bounds.min, bounds.max])
+                } else {
+                    let mut members = Vec::with_capacity(member_count);
+                    for _ in 0..member_count {
+                        let Some(VerifiedStepMember::Analytic { readback, imported }) =
+                            decoded.next()
+                        else {
+                            return Err(ReadError::Invalid);
+                        };
+                        members.push((*readback, imported.map(|value| *value)));
+                    }
+                    let topology = leaf
+                        .rust_topology()
+                        .ok_or(ReadError::Invalid)?
+                        .map_err(|_| ReadError::Invalid)?;
+                    if !leaf.step_readback_matches(&topology, &members, tolerance * 2.) {
+                        return Err(ReadError::Invalid);
+                    }
+                    members.into_iter().fold(
+                        (0_u32, 0., [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]]),
+                        |(count, volume, [min, max]), (member, _)| {
+                            (
+                                count + member.solid_count,
+                                volume + member.volume_mm3,
+                                [
+                                    std::array::from_fn(|i| min[i].min(member.bounds_mm[0][i])),
+                                    std::array::from_fn(|i| max[i].max(member.bounds_mm[1][i])),
+                                ],
+                            )
+                        },
+                    )
+                };
+                result.0 = result.0.checked_add(count).ok_or(ReadError::Limit)?;
+                result.1 += volume;
+                if !result.1.is_finite() {
+                    return Err(ReadError::Invalid);
+                }
+                result.2 = [
+                    std::array::from_fn(|i| result.2[0][i].min(bounds[0][i])),
+                    std::array::from_fn(|i| result.2[1][i].max(bounds[1][i])),
+                ];
+            }
+            if decoded.next().is_some() {
+                return Err(ReadError::Invalid);
+            }
+            Ok(result)
+        })())
+    }
+
     fn step_leaf_members<'a>(&'a self, leaves: &mut Vec<&'a Solid>) {
         if let Some(compound) = self.rust_compound() {
             for member in compound.members() {

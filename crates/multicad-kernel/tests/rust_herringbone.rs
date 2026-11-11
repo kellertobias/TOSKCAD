@@ -178,13 +178,30 @@ fn herringbone_world_topology_manufacturing_and_verified_standalone_step() {
     }
     let compound =
         Solid::compound_named(&[&solid, &world], EntityId::new(), Default::default()).unwrap();
-    let unsupported = dir.path().join("herringbone-compound.step");
-    assert!(!compound.supports_step_export());
+    let compound_path = dir.path().join("herringbone-compound.step");
+    assert!(compound.supports_step_export());
+    compound.write_step(&compound_path).unwrap();
+    let text = std::fs::read_to_string(&compound_path).unwrap();
+    let (count, volume, bounds) = compound
+        .verify_twisted_step_compound(&text, 1e-7)
+        .unwrap()
+        .unwrap();
+    assert_eq!(count, 2);
+    assert!((volume - compound.volume_mm3().unwrap()).abs() < 1e-5);
     assert_eq!(
-        compound.write_step(&unsupported).unwrap_err().kind,
-        GeometryErrorKind::Unsupported
+        bounds,
+        [
+            compound.bounds().unwrap().min,
+            compound.bounds().unwrap().max
+        ]
     );
-    assert!(!unsupported.exists());
+    assert!(solid.verify_herringbone_step(&text).unwrap().is_err());
+    if multicad_kernel::OCCT_LINKED {
+        assert_eq!(Solid::step_solids(&compound_path).unwrap().len(), 2);
+        let decoded = multicad_kernel::Shape::read_step(&compound_path).unwrap();
+        assert!(decoded.valid().unwrap());
+        assert!((decoded.volume().unwrap() - volume).abs() < 4e-4);
+    }
     assert_eq!(
         project_drawing(
             &[DrawingSolid {
