@@ -91,11 +91,21 @@ pub struct SceneExtras<'a> {
     pub spatial_rims: &'a [SpatialRimCandidate],
     pub spatial_ellipses: &'a [SpatialEllipseCandidate],
     pub lines: &'a [LineCandidate],
+    pub contours: &'a [ContourCandidate],
     pub intrinsic_hidden: &'a [HiddenCandidate],
     pub blocker_bodies: &'a [Body],
     pub blocker_rounds: &'a [RoundOccluder],
     pub openings: &'a [FaceOpening],
     pub stadium_openings: &'a [StadiumOpening],
+}
+
+/// An already self-classified silhouette chord. The generating face is
+/// skipped for this chord so its approximation cannot hide itself.
+#[derive(Clone, Copy, Debug)]
+pub struct ContourCandidate {
+    pub line: LineCandidate,
+    /// Index into the analytic faces passed to the same scene.
+    pub face: usize,
 }
 
 fn bounded(values: impl IntoIterator<Item = f64>) -> bool {

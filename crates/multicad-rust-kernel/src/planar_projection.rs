@@ -8,8 +8,8 @@ mod scene;
 pub(crate) use loft_faces::prepare_loft_faces;
 use profile::ProfileTrim;
 pub use scene::{
-    AnalyticFace, CircularOpeningEnd, DepthRange, FaceOpening, FaceTrim, HiddenCandidate,
-    LineCandidate, RimCandidate, RoundSegment, SceneExtras, SceneProjection,
+    AnalyticFace, CircularOpeningEnd, ContourCandidate, DepthRange, FaceOpening, FaceTrim,
+    HiddenCandidate, LineCandidate, RimCandidate, RoundSegment, SceneExtras, SceneProjection,
     SpatialEllipseCandidate, SpatialRimCandidate, StadiumOpening, project_scene,
     project_scene_with_analytic_faces, project_scene_with_candidates,
 };
@@ -516,7 +516,7 @@ fn project_straight(
             if span[1] - span[0] <= options.tolerance {
                 continue;
             }
-            hide_line(&line, span, blockers, None, work)?;
+            hide_line(&line, span, blockers, None, None, work)?;
             publish_spans(
                 &mut work.hidden,
                 span,
@@ -552,6 +552,7 @@ fn hide_line(
     span: Span,
     blockers: Blockers<'_>,
     source: Option<usize>,
+    own_face: Option<&AnalyticFace>,
     work: &mut Work,
 ) -> Result<(), ProjectionError> {
     work.hidden.clear();
@@ -563,6 +564,9 @@ fn hide_line(
     }
     if let Some(index) = blockers.analytic {
         index.visit(bounds, work, &mut |face, work| {
+            if own_face.is_some_and(|own_face| std::ptr::eq(own_face, *face)) {
+                return Ok(());
+            }
             face.hide_line(line, span, work)
         })?;
     }

@@ -1,5 +1,6 @@
-//! Exact visibility against the outer surface of an axial or transverse torus.
+//! Visibility against the analytic surface of a ring torus.
 use super::*;
+mod oblique;
 
 pub(super) struct Torus {
     center: Point,
@@ -10,7 +11,7 @@ pub(super) struct Torus {
 }
 
 impl AnalyticFace {
-    /// An axial or edge-on ring torus in drawing coordinates.
+    /// A ring torus in drawing coordinates.
     pub fn torus(
         center: Point,
         axis: Point,
@@ -48,7 +49,7 @@ impl AnalyticFace {
         } else if axis[2].abs() <= ANGULAR {
             [axis[0] / projected, axis[1] / projected, 0.]
         } else {
-            return Err(ProjectionError::Invalid);
+            unit(axis)
         };
         let extent: Point =
             std::array::from_fn(|i| major * axis[(i + 1) % 3].hypot(axis[(i + 2) % 3]) + minor);
@@ -79,6 +80,9 @@ impl Torus {
         limits: [Option<f64>; 2],
         work: &mut Work,
     ) -> Result<(), ProjectionError> {
+        if self.axis[2] != 0. && self.axis[2] != 1. {
+            return self.hide_oblique(path, span, gap, limits, work);
+        }
         let axial = self.axis[2] == 1.;
         let [u, v] = if axial {
             [[1., 0., 0.], [0., 1., 0.]]

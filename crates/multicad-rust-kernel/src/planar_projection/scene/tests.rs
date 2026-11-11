@@ -1425,12 +1425,129 @@ fn transverse_torus_resolves_the_curved_front_depth_and_respects_view_clips() {
         close(actual, expected);
     }
 
-    for (axis, radii) in [([0., 0., 1.], [1., 2.]), ([0., 0.6, 0.8], [6., 2.])] {
+    for (axis, radii) in [([0., 0., 1.], [1., 2.]), ([0., 0.6, 0.9], [6., 2.])] {
         assert!(matches!(
             AnalyticFace::torus([0.; 3], axis, radii),
             Err(ProjectionError::Invalid)
         ));
     }
+}
+
+#[test]
+fn oblique_torus_visibility_splits_the_bore_and_respects_retained_depth() {
+    let axis = [0.6, 0., 0.8];
+    let body = || AnalyticFace::torus([0.; 3], axis, [6., 2.]).unwrap();
+    let mut lines = [-10., 0., 10.]
+        .map(|z| LineCandidate {
+            source: (z + 10.) as usize,
+            points: [[-10., 0., z], [10., 0., z]],
+        })
+        .to_vec();
+    lines.push(LineCandidate {
+        source: 42,
+        points: [[50_000., 0., -10.], [-50_000., 0., -10.]],
+    });
+    let rim = SpatialEllipseCandidate {
+        source: 99,
+        ellipse: Ellipse {
+            center: [0., 0.],
+            major: 5.,
+            minor: 0.1,
+            u: [1., 0.],
+            v: [0., 1.],
+            trim: [0., TAU],
+        },
+        depth: -10.,
+        depth_cosine: 0.,
+        depth_sine: 0.,
+    };
+    let rim = [
+        rim,
+        SpatialEllipseCandidate {
+            source: 98,
+            ellipse: Ellipse {
+                trim: [0.1, 0.2],
+                ..rim.ellipse
+            },
+            ..rim
+        },
+    ];
+    let project = |faces: &[AnalyticFace]| {
+        project_scene_with_analytic_faces(
+            &[],
+            &[],
+            SceneExtras {
+                lines: &lines,
+                spatial_ellipses: &rim,
+                ..Default::default()
+            },
+            faces,
+            options(),
+        )
+        .unwrap()
+        .2
+    };
+    let result = project(&[body()]);
+    let ranges: Vec<_> = result
+        .iter()
+        .filter_map(|segment| match segment.edge.curve {
+            Curve::Line(ends) if segment.source == 0 && segment.edge.hidden => {
+                Some(ends.map(|p| p[0]))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ranges.len(), 2);
+    for (actual, expected) in ranges.into_iter().flatten().zip([-6.8, -2.8, 2.8, 6.8]) {
+        assert!((actual - expected).abs() < 1e-6, "{actual} vs {expected}");
+    }
+    let reversed: Vec<_> = result
+        .iter()
+        .filter_map(|segment| match segment.edge.curve {
+            Curve::Line(ends) if segment.source == 42 && segment.edge.hidden => {
+                Some(ends.map(|p| p[0]))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reversed.len(), 2);
+    for (actual, expected) in reversed.into_iter().flatten().zip([6.8, 2.8, -2.8, -6.8]) {
+        assert!((actual - expected).abs() < 1e-6);
+    }
+    assert!(
+        result
+            .iter()
+            .any(|segment| segment.source == 99 && segment.edge.hidden)
+    );
+    assert!(
+        result
+            .iter()
+            .any(|segment| segment.source == 99 && !segment.edge.hidden)
+    );
+    assert!(
+        !result
+            .iter()
+            .any(|segment| segment.source == 20 && segment.edge.hidden)
+    );
+
+    assert!(
+        result
+            .iter()
+            .any(|segment| segment.source == 98 && segment.edge.hidden)
+    );
+    let depth = DepthRange::new(3.7, Some(3.5)).unwrap();
+    let face = project(&[body().retained(depth).unwrap()]);
+    let volume = project(
+        &[AnalyticFace::retained_torus([0.; 3], axis, [6., 2.], depth)
+            .unwrap()
+            .unwrap()],
+    );
+    assert_ne!(face, volume);
+    assert!(
+        volume
+            .iter()
+            .any(|segment| segment.source == 0 && segment.edge.hidden)
+    );
 }
 
 #[test]
@@ -1491,4 +1608,34 @@ fn retained_torus_depth_caps_hide_stock_without_filling_the_bore() {
             close(actual, expected);
         }
     }
+}
+
+#[test]
+fn silhouette_chords_skip_only_their_own_analytic_face() {
+    let faces = [
+        AnalyticFace::torus([0.; 3], [0.6, 0., 0.8], [6., 2.]).unwrap(),
+        AnalyticFace::sphere([4.8, 0., 2.], 0.3).unwrap(),
+    ];
+    let line = LineCandidate {
+        source: 7,
+        points: [[3.1, 0., -10.], [6.5, 0., -10.]],
+    };
+    let mut contour = [ContourCandidate { line, face: 0 }];
+    let project = |contours: &[ContourCandidate]| {
+        project_scene_with_analytic_faces(
+            &[],
+            &[],
+            SceneExtras {
+                contours,
+                ..Default::default()
+            },
+            &faces,
+            options(),
+        )
+    };
+    let result = project(&contour).unwrap().2;
+    assert_eq!(result.len(), 3);
+    assert!(result[1].edge.hidden);
+    contour[0].face = 3;
+    assert!(matches!(project(&contour), Err(ProjectionError::Invalid)));
 }

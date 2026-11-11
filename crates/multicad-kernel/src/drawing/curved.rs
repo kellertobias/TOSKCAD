@@ -172,6 +172,8 @@ fn project_members(
     let mut rounds = Vec::new();
     let mut rounded = stadium::Shapes::default();
     let mut shell_faces = Vec::new();
+    let mut contours = Vec::new();
+    let mut intrinsic_hidden = Vec::new();
     let mut spatial_ellipses = Vec::new();
     let mut shell_tolerance = 0.0_f64;
     for (index, &(source, solid)) in members.iter().enumerate() {
@@ -184,6 +186,30 @@ fn project_members(
             continue;
         }
         if let Some((body, frame)) = solid.torus_body() {
+            let (center, axis) = torus::drawing_frame(frame, options.frame);
+            if axis[0].hypot(axis[1]) > torus::ANGULAR && axis[2].abs() > torus::ANGULAR {
+                let used = (contours.len() + intrinsic_hidden.len()) as u32;
+                let (visible, hidden) = torus::oblique::contours(
+                    center,
+                    axis,
+                    body.radii_mm(),
+                    DrawingProjection {
+                        maximum_curves: options.maximum_curves - used,
+                        maximum_points: options.maximum_points - 2 * used,
+                        ..options
+                    },
+                    source,
+                    shell_faces.len(),
+                )?;
+                contours.extend(visible);
+                intrinsic_hidden.extend(hidden);
+                shell_faces.push(
+                    planar_projection::AnalyticFace::torus(center, axis, body.radii_mm())
+                        .map_err(planar::projection_error)?,
+                );
+                shell_tolerance = shell_tolerance.max(solid.geometry_policy().linear_tolerance_mm);
+                continue;
+            }
             let (blocker, silhouettes) =
                 torus::scene_member(frame, body.radii_mm(), options.frame, source)?;
             shell_faces.push(blocker);
@@ -259,7 +285,6 @@ fn project_members(
     let analytic_offset = bodies.len();
     let mut rims = Vec::new();
     let mut openings = Vec::new();
-    let mut intrinsic_hidden = Vec::new();
     let mut planar_sources: Vec<_> = planar_members
         .iter()
         .map(|(source, _, _)| *source)
@@ -297,6 +322,7 @@ fn project_members(
             blocker_bodies: &rounded.bodies,
             blocker_rounds: &rounded.rounds,
             lines: &rounded.lines,
+            contours: &contours,
             spatial_rims: &rounded.rims,
             spatial_ellipses: &spatial_ellipses,
             intrinsic_hidden: &intrinsic_hidden,

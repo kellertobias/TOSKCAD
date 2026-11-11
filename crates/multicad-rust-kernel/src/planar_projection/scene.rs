@@ -12,8 +12,8 @@ mod depth;
 pub use analytic::{AnalyticFace, FaceTrim};
 use candidates::apply_openings;
 pub use candidates::{
-    CircularOpeningEnd, FaceOpening, HiddenCandidate, LineCandidate, RimCandidate, SceneExtras,
-    SpatialEllipseCandidate, SpatialRimCandidate, StadiumOpening,
+    CircularOpeningEnd, ContourCandidate, FaceOpening, HiddenCandidate, LineCandidate,
+    RimCandidate, SceneExtras, SpatialEllipseCandidate, SpatialRimCandidate, StadiumOpening,
 };
 pub use depth::DepthRange;
 use std::f64::consts::{PI, TAU};
@@ -119,6 +119,7 @@ fn project_with_extras(
         None if analytic.is_none()
             && rounds.is_empty()
             && extras.lines.is_empty()
+            && extras.contours.is_empty()
             && extras.rims.is_empty()
             && extras.spatial_rims.is_empty()
             && extras.spatial_ellipses.is_empty()
@@ -143,6 +144,7 @@ fn project_with_extras(
         let mut output = Output {
             source,
             own_round: Some(source),
+            own_face: None,
             limit: remaining,
             edges: &mut curved,
         };
@@ -152,11 +154,24 @@ fn project_with_extras(
     }
     let mut supplied = Vec::new();
     let limit = remaining - curved.len();
-    for &line in extras.lines {
+    let lines = extras
+        .lines
+        .iter()
+        .copied()
+        .map(|line| Ok((line, None)))
+        .chain(extras.contours.iter().map(|contour| {
+            analytic_faces
+                .get(contour.face)
+                .map(|face| (contour.line, Some(face)))
+                .ok_or(ProjectionError::Invalid)
+        }));
+    for line in lines {
+        let (line, own_face) = line?;
         work.charge(1)?;
         let mut output = Output {
             source: line.source,
             own_round: None,
+            own_face,
             limit,
             edges: &mut supplied,
         };
@@ -175,6 +190,7 @@ fn project_with_extras(
         let mut output = Output {
             source: candidate.source,
             own_round: None,
+            own_face: None,
             limit,
             edges: &mut supplied,
         };
@@ -195,6 +211,7 @@ fn project_with_extras(
         let mut output = Output {
             source,
             own_round: None,
+            own_face: None,
             limit,
             edges: &mut supplied,
         };
@@ -211,6 +228,7 @@ fn project_with_extras(
             let mut output = Output {
                 source,
                 own_round: None,
+                own_face: None,
                 limit,
                 edges: &mut supplied,
             };
@@ -245,6 +263,7 @@ struct Scene<'a> {
 struct Output<'a> {
     source: usize,
     own_round: Option<usize>,
+    own_face: Option<&'a AnalyticFace>,
     limit: usize,
     edges: &'a mut Vec<RoundSegment>,
 }
@@ -330,7 +349,7 @@ impl Scene<'_> {
                 if edge.hidden {
                     emit(true, curve(span))
                 } else {
-                    hide_line(&line, span, self.blockers, source, work)?;
+                    hide_line(&line, span, self.blockers, source, output.own_face, work)?;
                     publish_spans(&mut work.hidden, span, tolerance, |hidden, trim| {
                         emit(hidden, curve(trim))
                     })

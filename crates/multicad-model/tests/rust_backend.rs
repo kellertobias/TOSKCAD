@@ -744,6 +744,50 @@ fn verify_torus_drawing_scene(torus: &multicad_kernel::Solid) {
         v: [0., 0., 1.],
         ..Default::default()
     };
+    let tilted_frame = PlaneFrame {
+        u: [0.8, 0., 0.6],
+        v: [0., 1., 0.],
+        ..Default::default()
+    };
+    let normal = tilted_frame.normal();
+    let rear_oblique = Solid::rust_box(
+        EntityId::new().uuid_bits(),
+        [16, 1, 1].map(|length| Rational::new(length, 1).unwrap()),
+        PlaneFrame {
+            origin: std::array::from_fn(|i| -8. * tilted_frame.u[i] - 10. * normal[i]),
+            ..tilted_frame
+        },
+        Default::default(),
+    )
+    .unwrap();
+    let oblique = project(
+        &[torus, &rear_oblique],
+        DrawingProjection {
+            frame: tilted_frame,
+            ..options
+        },
+    );
+    let visible_oblique = axial_spans(&oblique, VectorRole::Visible);
+    assert_eq!(visible_oblique.len(), 3, "{visible_oblique:?}");
+    for (actual, expected) in visible_oblique
+        .into_iter()
+        .flatten()
+        .zip([-8., -5., -3., 3., 5., 8.])
+    {
+        assert!((actual - expected).abs() < 1e-6, "{actual} vs {expected}");
+    }
+    let steep = project(
+        &[torus],
+        DrawingProjection {
+            frame: PlaneFrame {
+                u: [0.1, 0., 0.99_f64.sqrt()],
+                ..tilted_frame
+            },
+            ..options
+        },
+    );
+    assert!(steep.iter().any(|edge| edge.role == VectorRole::Visible));
+    assert!(steep.iter().any(|edge| edge.role == VectorRole::Hidden));
     let transverse_cut = DrawingProjection {
         frame: screen,
         section_only: true,

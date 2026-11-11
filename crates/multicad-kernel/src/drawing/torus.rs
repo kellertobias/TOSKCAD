@@ -6,7 +6,7 @@ use multicad_rust_kernel::{
 };
 use std::f64::consts::{PI, TAU};
 
-mod oblique;
+pub(super) mod oblique;
 mod transverse;
 
 pub(super) const ANGULAR: f64 = 64. * f64::EPSILON;
@@ -14,7 +14,7 @@ pub(super) const ANGULAR: f64 = 64. * f64::EPSILON;
 fn unsupported() -> GeometryError {
     err(
         GeometryErrorKind::Unsupported,
-        "Rust oblique torus drawings currently require a section-only view.",
+        "Rust torus section does not support the requested orientation or detail crop.",
     )
 }
 
@@ -156,9 +156,6 @@ pub(super) fn project(
         return Err(unsupported());
     }
     if !axial {
-        if facing.abs() > ANGULAR {
-            return Err(unsupported());
-        }
         return curved::project_scene(std::slice::from_ref(input), options);
     }
     let detail = options
