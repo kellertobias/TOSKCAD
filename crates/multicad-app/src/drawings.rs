@@ -1000,6 +1000,17 @@ mod tests {
             },
             ..page.views.last().unwrap().clone()
         });
+        let retained_id = EntityId::new();
+        page.views.push(drawings::DrawingView {
+            id: retained_id,
+            name: "Torus retained transverse section".into(),
+            kind: drawings::ViewKind::Section {
+                offset_mm: -0.5,
+                range: drawings::SectionRange::Depth { depth_mm: 2.5 },
+                window: Default::default(),
+            },
+            ..page.views.last().unwrap().clone()
+        });
         let (_, prepared) = drawings::prepare_create(
             &session,
             session.revision(),
@@ -1055,6 +1066,13 @@ mod tests {
                 .iter()
                 .any(|[u, v]| u.abs() < 1e-8 && (v.abs() - 0.75_f64.sqrt()).abs() < 1e-8)
         }));
+        let ViewEvaluation::Ready { vectors, .. } = &result.views[&retained_id] else {
+            panic!("{:?}", result.views[&retained_id]);
+        };
+        assert!(vectors.iter().any(|v| v.role == VectorRole::Section));
+        assert!(vectors.iter().any(|v| v.role == VectorRole::Visible
+            && matches!(v.curve, VectorCurve::Line { a, b }
+                if (a[1] - 1.).abs() < 1e-8 && (b[1] - 1.).abs() < 1e-8)));
     }
 
     #[test]
