@@ -4,14 +4,18 @@ use multicad_core::references::{AnalyticGeometry, TopologyKind};
 use multicad_rust_kernel::curved_projection::{Curve, Edge, Ellipse};
 use std::{collections::BTreeMap, f64::consts::TAU};
 
+mod bevel_projection;
 mod chamfered;
 mod herringbone_projection;
 mod normal_sweep;
 mod spline;
+mod worm_projection;
+pub(super) use bevel_projection::project_bevel;
 pub(super) use chamfered::project_chamfered_bores;
 pub(super) use herringbone_projection::project_herringbone;
 pub(super) use normal_sweep::{project_normal_sweep, transverse_rails};
 pub(super) use spline::{contains_spline_sweep, project_spline_sweep};
+pub(super) use worm_projection::project_worm_gearing;
 
 type Point = [f64; 2];
 

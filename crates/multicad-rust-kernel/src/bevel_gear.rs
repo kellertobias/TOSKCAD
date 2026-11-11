@@ -10,6 +10,7 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 pub mod clearance;
 mod mesh;
 mod topology;
+pub mod view;
 pub use topology::{Curve, Edge, Face, FaceKind, Shape, Topology};
 
 pub type Point = [f64; 3];
@@ -242,9 +243,34 @@ impl Bevel {
         if toe * root.sin() / (root - pitch).cos() - bore < minimum_mm {
             return Err(Error::InvalidProfile);
         }
-        let rounding = (fillet / distance).asin();
+        let mut rounding = (fillet / distance).asin();
+        // The fillet touches the meridian plane at γ_t with
+        // cos γ_t = cos(root + ρ) / cos ρ. A meridian between γ_t and the base
+        // cone shorter than the minimum feature is absorbed, as natively:
+        // the rounding grows to the root ρ* of
+        // g(ρ) = cos(root + ρ) − cos β cos ρ, where γ_t = β exactly and the
+        // radially starting involute continues the fillet tangentially.
+        // g decreases, dγ_t/dρ = sin(root) / (sin γ_t cos²ρ), so the fillet
+        // radius changes by at most `minimum · sin β / sin(root)`.
+        let touch_of = |rho: f64| ((root + rho).cos() / rho.cos()).clamp(-1., 1.).acos();
+        let gap = |rho: f64| (root + rho).cos() - base.cos() * rho.cos();
+        let sliver = gap(rounding) >= 0.
+            && base - touch_of(rounding) > 0.
+            && base - touch_of(rounding) < minimum_mm / distance;
+        if sliver {
+            let (mut lo, mut hi) = (rounding, FRAC_PI_2 - root);
+            for _ in 0..200 {
+                let middle = (lo + hi) / 2.;
+                if gap(middle) >= 0. {
+                    lo = middle;
+                } else {
+                    hi = middle;
+                }
+            }
+            rounding = lo;
+        }
         let center_gamma = root + rounding;
-        let meridian = center_gamma <= (base.cos() * rounding.cos()).acos();
+        let meridian = sliver || center_gamma <= (base.cos() * rounding.cos()).acos();
         let mut gear = Self {
             spec,
             rounding,
@@ -262,7 +288,11 @@ impl Bevel {
             pieces: vec![],
         };
         let touch = if meridian {
-            gear.touch_gamma = (center_gamma.cos() / rounding.cos()).acos();
+            gear.touch_gamma = if sliver {
+                base
+            } else {
+                (center_gamma.cos() / rounding.cos()).acos()
+            };
             gear.center_phi = half + (rounding.sin() / center_gamma.sin()).asin();
             gear.center = polar(center_gamma, gear.center_phi);
             polar(gear.touch_gamma, half)
@@ -712,6 +742,35 @@ impl Bevel {
             }
         }
         best
+    }
+
+    /// Sector and side piece whose cone through the apex carries a side-face
+    /// point given in local coordinates. Root lands lie beyond the fillet
+    /// center azimuth; along a flank the polar angle orders the pieces.
+    pub fn side_piece_at(&self, point: Point) -> Option<(u32, Piece)> {
+        let length = norm(point);
+        let direction = scale(point, 1. / length);
+        let gamma = direction[2].clamp(-1., 1.).acos();
+        let teeth = self.spec.teeth;
+        let pitch = TAU / f64::from(teeth);
+        let phi = direction[1].atan2(direction[0]);
+        let turns = (phi / pitch).round();
+        let local = phi - turns * pitch;
+        let sector = (turns as i64).rem_euclid(i64::from(teeth)) as u32;
+        let left = local < 0.;
+        let side = |l: Piece, r: Piece| if left { l } else { r };
+        let piece = if local.abs() > self.center_phi {
+            side(Piece::RootLeft, Piece::RootRight)
+        } else if gamma <= self.touch_gamma {
+            side(Piece::FilletLeft, Piece::FilletRight)
+        } else if self.meridian && gamma <= self.spec.base_cone_angle_rad {
+            side(Piece::MeridianLeft, Piece::MeridianRight)
+        } else if gamma < self.spec.tip_cone_angle_rad - 1e-12 {
+            side(Piece::InvoluteLeft, Piece::InvoluteRight)
+        } else {
+            Piece::Tip
+        };
+        (length > 0.).then_some((sector, piece))
     }
 
     /// Tooth center direction of one sector on the pitch cone.

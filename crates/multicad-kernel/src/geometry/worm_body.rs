@@ -126,6 +126,34 @@ impl Solid {
         Self::rust_worm_body(WormGeometry::Wheel(wheel), feature, policy)
     }
 
+    /// The placed Rust worm of this solid.
+    pub(crate) fn rust_worm(&self) -> Option<(&Worm, PlaneFrame)> {
+        match self.worm_body()? {
+            (
+                WormBody {
+                    geometry: WormGeometry::Worm(worm),
+                    ..
+                },
+                frame,
+            ) => Some((worm, frame)),
+            _ => None,
+        }
+    }
+
+    /// The placed Rust generated wheel of this solid.
+    pub(crate) fn rust_worm_wheel(&self) -> Option<(&Wheel, PlaneFrame)> {
+        match self.worm_body()? {
+            (
+                WormBody {
+                    geometry: WormGeometry::Wheel(wheel),
+                    ..
+                },
+                frame,
+            ) => Some((wheel, frame)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn worm_body(&self) -> Option<(&WormBody, PlaneFrame)> {
         match &self.body {
             SolidBody::Worm(body, frame) => Some((body, *frame)),
@@ -370,24 +398,43 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 
 impl Solid {
-    /// Validate the decoded Rust worm shell and integrate its STEP volume in
-    /// mm³. Generated wheels have no Rust STEP shell yet.
+    /// Validate the decoded Rust worm or generated wheel shell and integrate
+    /// its STEP volume in mm³.
     pub fn verify_worm_step(
         &self,
         source: &str,
     ) -> Option<Result<f64, multicad_rust_kernel::step_read::ReadError>> {
         let (body, frame) = self.worm_body()?;
-        let WormGeometry::Worm(worm) = &body.geometry else {
-            return None;
-        };
-        Some(multicad_rust_kernel::step_read::verify_za_worm(
-            source,
-            worm,
-            frame.origin,
-            frame.u,
-            frame.v,
-            self.policy.linear_tolerance_mm,
-        ))
+        let tolerance = self.policy.linear_tolerance_mm;
+        let [origin, u, v] = [frame.origin, frame.u, frame.v];
+        Some(match &body.geometry {
+            WormGeometry::Worm(worm) => multicad_rust_kernel::step_read::verify_za_worm(
+                source, worm, origin, u, v, tolerance,
+            ),
+            WormGeometry::Wheel(wheel) => multicad_rust_kernel::step_read::verify_worm_wheel(
+                source, wheel, origin, u, v, tolerance,
+            ),
+        })
+    }
+}
+
+impl Solid {
+    /// The authored compound slot of a placed Rust worm or wheel.
+    pub(crate) fn expected_worm_member(
+        &self,
+    ) -> Option<multicad_rust_kernel::step_read::ExpectedStepMember<'_>> {
+        use multicad_rust_kernel::step_read::ExpectedStepMember;
+        let (body, frame) = self.worm_body()?;
+        let [origin, u, v] = [frame.origin, frame.u, frame.v];
+        Some(match &body.geometry {
+            WormGeometry::Worm(worm) => ExpectedStepMember::Worm { worm, origin, u, v },
+            WormGeometry::Wheel(wheel) => ExpectedStepMember::WormWheel {
+                wheel,
+                origin,
+                u,
+                v,
+            },
+        })
     }
 }
 
@@ -401,7 +448,13 @@ impl WormBody {
                 frame.v,
                 policy.linear_tolerance_mm,
             ),
-            WormGeometry::Wheel(_) => false,
+            WormGeometry::Wheel(wheel) => multicad_rust_kernel::step::supports_worm_wheel(
+                wheel,
+                frame.origin,
+                frame.u,
+                frame.v,
+                policy.linear_tolerance_mm,
+            ),
         }
     }
 
@@ -419,7 +472,13 @@ impl WormBody {
                 frame.v,
                 policy.linear_tolerance_mm,
             ),
-            WormGeometry::Wheel(_) => Err(multicad_rust_kernel::step::StepError::Unsupported),
+            WormGeometry::Wheel(wheel) => writer.append_worm_wheel(
+                wheel,
+                frame.origin,
+                frame.u,
+                frame.v,
+                policy.linear_tolerance_mm,
+            ),
         }
     }
 }

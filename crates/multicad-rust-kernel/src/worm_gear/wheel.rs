@@ -13,8 +13,8 @@ use crate::bevel_gear::integrate;
 use std::f64::consts::{PI, TAU};
 
 const LEAD: f64 = 0.5;
-const CUTTER_TIP: f64 = 6.25;
-const WORM_ROOT: f64 = 3.75;
+pub(crate) const CUTTER_TIP: f64 = 6.25;
+pub(crate) const WORM_ROOT: f64 = 3.75;
 const STATIONS: usize = 9;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -75,6 +75,22 @@ pub(crate) struct Section {
     pub(crate) exit: [f64; 2],
 }
 
+/// Derived data computed once per wheel. It never affects equality.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Cache<T>(std::sync::OnceLock<T>);
+
+impl<T> PartialEq for Cache<T> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl<T> Cache<T> {
+    pub(crate) fn get(&self, compute: impl FnOnce() -> T) -> &T {
+        self.0.get_or_init(compute)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Wheel {
     spec: WheelSpec,
@@ -84,9 +100,11 @@ pub struct Wheel {
     half: f64,
     slope: f64,
     span: f64,
+    pub(crate) section_bounds: Cache<Option<[f64; 2]>>,
+    pub(crate) remainders: Cache<Option<Box<[super::wheel_bounds::Remainder; 5]>>>,
 }
 
-fn turn<T: Real>([x, y]: [T; 2], angle: T) -> [T; 2] {
+pub(crate) fn turn<T: Real>([x, y]: [T; 2], angle: T) -> [T; 2] {
     let (s, c) = angle.sin_cos();
     [c * x - s * y, s * x + c * y]
 }
@@ -132,6 +150,8 @@ impl Wheel {
             half: PI / 4. + thinning / (2. * m),
             slope: super::worm::slope(),
             span: PI / f64::from(teeth),
+            section_bounds: Cache::default(),
+            remainders: Cache::default(),
         };
         wheel.check(minimum_mm)?;
         Ok(wheel)
@@ -232,25 +252,31 @@ impl Wheel {
     }
 
     pub(crate) fn flank<T: Real>(&self, r: T, v: T, side: f64) -> [T; 2] {
-        let [q, z, w] = self.contact(r, v, side);
-        let c = T::constant;
-        turn([c(self.center) - q, w], -(z + w) / c(self.radius))
+        let (q, angle) = self.flank_polar(r, v, side);
+        turn(q, angle)
     }
 
-    fn tip_edge<T: Real>(&self, u: T, v: T, side: f64) -> [T; 2] {
+    /// Flank point before its rotation about the wheel axis, and that angle.
+    fn flank_polar<T: Real>(&self, r: T, v: T, side: f64) -> ([T; 2], T) {
+        let [q, z, w] = self.contact(r, v, side);
+        let c = T::constant;
+        ([c(self.center) - q, w], -(z + w) / c(self.radius))
+    }
+
+    fn tip_edge<T: Real>(&self, u: T, v: T, side: f64) -> ([T; 2], T) {
         let c = T::constant;
         let [q, z, w] = self.contact(c(CUTTER_TIP), v, side);
         let travel = (c(1.) - u) * w;
-        turn([c(self.center) - q, travel], -(z + travel) / c(self.radius))
+        ([c(self.center) - q, travel], -(z + travel) / c(self.radius))
     }
 
-    fn root_gap<T: Real>(&self, u: T, v: T) -> [T; 2] {
+    fn root_gap<T: Real>(&self, u: T, v: T) -> ([T; 2], T) {
         let c = T::constant;
         let q = (c(CUTTER_TIP * CUTTER_TIP) - v * v).sqrt();
         let crest = self.half - 1.25 * self.slope;
         let phase = c(LEAD / self.radius) * (v / c(CUTTER_TIP)).asin()
             + (c(2.) * u - c(1.)) * c(crest / self.radius);
-        turn([c(self.center) - q, c(0.)], phase)
+        ([c(self.center) - q, c(0.)], phase)
     }
 
     /// Cutter radius where one flank leaves the blank at section `v`.
@@ -277,40 +303,53 @@ impl Wheel {
         Section { v, crossing, exit }
     }
 
-    /// Cutter radius span of one trimmed flank piece, from its start.
-    fn flank_radius<T: Real>(section: &Section, piece: Piece, u: T) -> T {
-        let c = T::constant;
-        match piece {
-            Piece::FlankMinus => c(section.crossing[0]) + c(CUTTER_TIP - section.crossing[0]) * u,
-            _ => c(CUTTER_TIP) - c(CUTTER_TIP - section.crossing[1]) * u,
-        }
-    }
-
     /// Exact section point of sector 0, in module units, with `u` in `[0, 1]`
     /// increasing counterclockwise.
     pub(crate) fn piece_point<T: Real>(&self, section: &Section, piece: Piece, u: T) -> [T; 2] {
-        let v = T::constant(section.v);
+        let crossing = section.crossing[usize::from(piece == Piece::FlankPlus)];
+        self.patch(piece, u, T::constant(section.v), T::constant(crossing))
+    }
+
+    /// Generating patch of sector 0 over `(u, v)` in `[0, 1] × [-h, h]`.
+    /// `crossing` is the cutter radius where this piece's flank leaves the
+    /// blank at `v`; other pieces ignore it. Flanks run linearly in cutter
+    /// radius between that exit and the cutter tip.
+    pub(crate) fn patch<T: Real>(&self, piece: Piece, u: T, v: T, crossing: T) -> [T; 2] {
+        let (q, angle) = self.polar_patch(piece, u, v, crossing);
+        turn(q, angle)
+    }
+
+    /// Patch point before its rotation about the wheel axis, and that angle.
+    pub(crate) fn polar_patch<T: Real>(
+        &self,
+        piece: Piece,
+        u: T,
+        v: T,
+        crossing: T,
+    ) -> ([T; 2], T) {
+        let c = T::constant;
         match piece {
-            Piece::FlankMinus | Piece::FlankPlus => {
-                let side = piece.flank_side().expect("flank");
-                self.flank(Self::flank_radius(section, piece, u), v, side)
+            Piece::FlankMinus => self.flank_polar(crossing + (c(CUTTER_TIP) - crossing) * u, v, 1.),
+            Piece::FlankPlus => {
+                self.flank_polar(c(CUTTER_TIP) - (c(CUTTER_TIP) - crossing) * u, v, -1.)
             }
             Piece::EdgeMinus => self.tip_edge(u, v, 1.),
             Piece::Torus => self.root_gap(u, v),
-            Piece::EdgePlus => self.tip_edge(T::constant(1.) - u, v, -1.),
+            Piece::EdgePlus => self.tip_edge(c(1.) - u, v, -1.),
         }
     }
 
     /// Surface point over `(a, v)`: the cutter radius for flanks, else the
     /// profile parameter. Flank domains are trimmed at `crossing`.
     pub(crate) fn surface_point<T: Real>(&self, piece: Piece, a: T, v: T) -> [T; 2] {
-        match piece {
-            Piece::FlankMinus => self.flank(a, v, 1.),
-            Piece::FlankPlus => self.flank(a, v, -1.),
+        let (q, angle) = match piece {
+            Piece::FlankMinus => self.flank_polar(a, v, 1.),
+            Piece::FlankPlus => self.flank_polar(a, v, -1.),
             Piece::EdgeMinus => self.tip_edge(a, v, 1.),
             Piece::Torus => self.root_gap(a, v),
             Piece::EdgePlus => self.tip_edge(T::constant(1.) - a, v, -1.),
-        }
+        };
+        turn(q, angle)
     }
 
     /// Integrate `f(point, area element)` over one side piece of sector 0
@@ -359,7 +398,7 @@ impl Wheel {
     }
 
     /// Material area of sector 0 at a section and its first moments.
-    fn sector_section(&self, v: f64) -> [f64; 3] {
+    pub(crate) fn sector_section(&self, v: f64) -> [f64; 3] {
         let section = self.section(v);
         let blank = self.blank();
         let bore = self.spec.bore_radius_mm / self.spec.axial_module_mm;
