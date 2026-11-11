@@ -69,4 +69,3 @@ fn transformed_cylinder_checks_the_composed_metric_before_publication() {
     .unwrap();
     assert!(small.transformed(transform).is_ok());
 }
-
