@@ -16,6 +16,7 @@ use std::{
 
 mod chamfer;
 mod concave;
+mod imported_convex;
 mod loft;
 mod miter_sweep;
 mod scale;
@@ -330,6 +331,7 @@ impl Solid {
         policy: GeometryPolicy,
     ) -> Option<Result<Vec<ConvexPart>, GeometryError>> {
         self.simple_concave_parts(topology, policy)
+            .or_else(|| self.imported_convex_parts(topology, policy))
             .or_else(|| self.planar_convex_parts_legacy(topology, policy).map(Ok))
     }
 
@@ -653,6 +655,12 @@ impl PlanarBooleanBody {
         frame: PlaneFrame,
         tolerance: f64,
     ) -> Result<Vec<ConvexPiece>, GeometryError> {
+        if self.material.is_none() {
+            let piece = self
+                .imported_convex_piece(tolerance)
+                .ok_or_else(planar_unsupported)??;
+            return Self::placed_pieces(&[piece], frame, tolerance);
+        }
         let pieces = match self.material.as_ref().ok_or_else(planar_unsupported)? {
             Material::Positive(pieces) | Material::LabeledCells { pieces, .. } => pieces,
             Material::Cut(recipe) => recipe.certify(&self.geometry, tolerance)?.pieces(),

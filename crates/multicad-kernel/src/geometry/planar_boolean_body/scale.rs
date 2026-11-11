@@ -383,7 +383,7 @@ impl Solid {
 mod tests {
     use super::*;
     #[test]
-    fn indexed_import_scale_does_not_fabricate_boolean_material() {
+    fn indexed_import_scale_keeps_none_and_proves_convex_material_on_demand() {
         let policy = GeometryPolicy::default();
         let geometry = Union::new(
             &[ConvexPiece::from_box([0.; 3], [2.; 3], policy.linear_tolerance_mm).unwrap()],
@@ -403,14 +403,55 @@ mod tests {
             )
             .unwrap();
         assert!(result.planar_boolean_body().unwrap().0.material.is_none());
-        assert_eq!(
-            result
-                .rust_subtract_planar_tools(&[&source], EntityId::new(), policy)
-                .err()
-                .unwrap()
-                .kind,
-            GeometryErrorKind::Unsupported
-        );
+        let cut = result
+            .rust_subtract_planar_tools(&[&source], EntityId::new(), policy)
+            .unwrap()
+            .unwrap();
+        assert!((cut.volume_mm3().unwrap() - 10.).abs() < 1e-7);
+        assert!(result.planar_boolean_body().unwrap().0.material.is_none());
         assert_eq!(source.volume_mm3().unwrap(), 8.);
+    }
+
+    #[test]
+    fn none_material_does_not_admit_nonconvex_or_multishell_occupied_geometry() {
+        let policy = GeometryPolicy::default();
+        let block = |min, max| ConvexPiece::from_box(min, max, policy.linear_tolerance_mm).unwrap();
+        let tool = Solid::from_imported_planar_boundary(
+            Union::new(&[block([0.; 3], [1.; 3])], policy.linear_tolerance_mm).unwrap(),
+            EntityId::new(),
+            policy,
+        )
+        .unwrap();
+        let void = Union::subtract(
+            &[block([0.; 3], [4.; 3])],
+            &[block([1.; 3], [3.; 3])],
+            policy.linear_tolerance_mm,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(void.solid_count(), 1);
+        assert_eq!(void.shell_count(), 2);
+        let geometries = [
+            vec![
+                block([0.; 3], [3., 1., 2.]),
+                block([0., 1., 0.], [1., 3., 2.]),
+            ],
+            vec![block([0.; 3], [1.; 3]), block([3.; 3], [4.; 3])],
+        ]
+        .map(|pieces| Union::new(&pieces, policy.linear_tolerance_mm).unwrap());
+        for geometry in geometries.into_iter().chain([void]) {
+            let source =
+                Solid::from_imported_planar_boundary(geometry, EntityId::new(), policy).unwrap();
+            assert!(source.planar_boolean_body().unwrap().0.material.is_none());
+            assert_eq!(
+                source
+                    .rust_subtract_planar_tools(&[&tool], EntityId::new(), policy)
+                    .err()
+                    .unwrap()
+                    .kind,
+                GeometryErrorKind::Unsupported
+            );
+            assert!(source.planar_boolean_body().unwrap().0.material.is_none());
+        }
     }
 }
