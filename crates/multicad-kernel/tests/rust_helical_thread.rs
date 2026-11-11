@@ -95,14 +95,21 @@ fn facade_keeps_real_m8_material_and_analytic_topology_after_rigid_placement() {
     assert_eq!(display.vertices.len(), 8);
     assert_eq!(display.vertices, placed.display_vertices().unwrap());
     assert_eq!(placed.solid_count().unwrap(), 1);
-    assert!(!placed.supports_step_export());
+    assert!(placed.supports_step_export());
     let scratch = tempfile::tempdir().unwrap();
     let path = scratch.path().join("thread.step");
-    assert_eq!(
-        placed.write_step(&path).unwrap_err().kind,
-        GeometryErrorKind::Unsupported
-    );
-    assert!(!path.exists());
+    placed.write_step(&path).unwrap();
+    let source = std::fs::read_to_string(&path).unwrap();
+    let decoded_volume = placed.verify_helical_step(&source).unwrap().unwrap();
+    assert!((decoded_volume - placed.volume_mm3().unwrap()).abs() < 1e-5);
+    if cfg!(feature = "occt") {
+        let native = multicad_kernel::Shape::read_step(&path).unwrap();
+        assert!(native.valid().unwrap());
+        assert_eq!(Solid::step_solids(&path).unwrap().len(), 1);
+        // OCCT's volume integrator cannot certify this long tilted thread.
+        // Check its independent topology validation; the decoded boundary above
+        // certifies the placed helices and integrates their material volume.
+    }
 }
 
 #[test]
