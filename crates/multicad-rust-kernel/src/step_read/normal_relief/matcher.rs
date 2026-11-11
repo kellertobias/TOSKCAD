@@ -243,11 +243,16 @@ fn pocketed(imported: &ImportSolid, frame: Frame, tolerance: f64) -> Result<(Rel
     let frame = if end {
         frame
     } else {
-        Frame::new(
-            frame.world([0., 0., imported.height_mm]),
-            frame.axes[0],
-            frame.axes[1].map(|v| -v),
-        )?
+        // A half-turn of this already checked finite chart preserves its
+        // Gram matrix exactly; the validated stock height bounds translation.
+        Frame {
+            origin: frame.world([0., 0., imported.height_mm]),
+            axes: [
+                frame.axes[0],
+                frame.axes[1].map(|v| -v),
+                frame.axes[2].map(|v| -v),
+            ],
+        }
     };
     Ok((relief, frame))
 }

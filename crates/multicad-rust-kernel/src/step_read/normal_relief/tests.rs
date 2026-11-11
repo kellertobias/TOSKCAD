@@ -142,6 +142,7 @@ fn descriptor_matcher_proves_world_graph_and_refuses_changed_material() {
     assert!(!normal_relief_import_matches(
         &imported, &relief, frame, TOL
     ));
+    imported.u = X;
     imported.profile = ImportProfile::Cylinder { radius_mm: 3. };
     assert!(!normal_relief_import_matches(
         &imported, &relief, frame, TOL
@@ -290,4 +291,64 @@ fn modified_supports_trim_geometry_and_incidence_are_rejected_before_import() {
         assert!(verify_normal_relief(&malformed, &relief, [0.; 3], X, Y, TOL).is_err());
         assert!(read_import_solid(&malformed, TOL).is_err());
     }
+}
+#[test]
+fn close_vertices_alone_do_not_certify_skinny_body_support_directions() {
+    let base = Sweep::new(vec![rectangle([0.; 2], [10., 0.001])], 0.00002, TOL, 1e-6).unwrap();
+    let motif = Sweep::new(
+        vec![vec![ProfileEdge::Circle {
+            center: [5., 0.0005],
+            radius_mm: 0.0001,
+            clockwise: false,
+        }]],
+        0.00001,
+        TOL,
+        1e-6,
+    )
+    .unwrap();
+    let relief = Relief::new(base, vec![motif], Kind::Raised, TOL, 1e-6).unwrap();
+    let angle = 1e-9_f64;
+    let frame = [[0.; 3], X, [0., angle.cos(), angle.sin()]];
+    let actual = ImportSolid {
+        origin_mm: [0.; 3],
+        u: X,
+        v: Y,
+        height_mm: 0.00002,
+        profile: ImportProfile::NormalRelief {
+            relief: relief.clone(),
+        },
+    };
+    assert!(normal_relief_import_matches(
+        &actual,
+        &relief,
+        [[0.; 3], X, Y],
+        TOL
+    ));
+    assert!(!normal_relief_import_matches(&actual, &relief, frame, TOL));
+    let text = crate::step::write_normal_relief(&relief, [0.; 3], X, Y).unwrap();
+    let entities = parse_entities(&text, TOL).unwrap();
+    let mut shell = Shell::new(&entities, TOL, true);
+    let ids = shell.shell_faces().unwrap();
+    shell.validate_faces(ids).unwrap();
+    let tilted = Frame::new(frame[0], frame[1], frame[2]).unwrap();
+    let vertices = proof::vertices(
+        &shell,
+        relief.boundary(),
+        tilted,
+        TOL / 16.,
+        &mut Work(MAX_WORK),
+    )
+    .unwrap();
+    assert!(
+        proof::edges(
+            &shell,
+            relief.boundary(),
+            &vertices,
+            tilted,
+            TOL / 16.,
+            &mut Work(MAX_WORK)
+        )
+        .is_ok()
+    );
+    assert!(verify_normal_relief(&text, &relief, frame[0], frame[1], frame[2], TOL).is_err());
 }

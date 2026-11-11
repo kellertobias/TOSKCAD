@@ -36,6 +36,12 @@ fn typed_supports_and_straight_profile_edges_do_not_mask_geometry_changes() {
 fn legacy_circular_pockets_match_the_complete_same_physical_relief() {
     use crate::{normal_relief::Kind, normal_sweep::Sweep};
     let rings = vec![super::super::tests::rectangle([0.; 2], [12., 10.])];
+    let mut rings = rings;
+    rings.push(vec![ProfileEdge::Circle {
+        center: [6., 7.],
+        radius_mm: 0.3,
+        clockwise: true,
+    }]);
     let base = Sweep::new(rings, 3., 1e-7, 1e-5).unwrap();
     let motifs = [([3., 3.], 1., 0.5), ([8., 6.], 0.75, 1.25)]
         .into_iter()
@@ -82,4 +88,32 @@ fn legacy_circular_pockets_match_the_complete_same_physical_relief() {
             1e-7
         ));
     }
+}
+#[test]
+fn empty_or_wrong_legacy_descriptors_are_not_synthesized_into_material() {
+    let frame = Frame::new([0.; 3], [1., 0., 0.], [0., 1., 0.]).unwrap();
+    let mut imported = ImportSolid {
+        origin_mm: [0.; 3],
+        u: frame.axes[0],
+        v: frame.axes[1],
+        height_mm: 3.,
+        profile: ImportProfile::Cylinder { radius_mm: 2. },
+    };
+    assert!(matches!(
+        pocketed(&imported, frame, 1e-7),
+        Err(ReadError::Unsupported)
+    ));
+    imported.profile = ImportProfile::PocketedPolygon {
+        rings: vec![vec![[0., 0.], [12., 0.], [12., 10.], [0., 10.]]],
+        circular_holes: vec![],
+        pockets: vec![],
+    };
+    assert!(pocketed(&imported, frame, 1e-7).is_err());
+    let expected = super::super::tests::fixture(crate::normal_relief::Kind::Recessed);
+    assert!(!normal_relief_import_matches(
+        &imported,
+        &expected,
+        [[0.; 3], frame.axes[0], frame.axes[1]],
+        1e-7
+    ));
 }

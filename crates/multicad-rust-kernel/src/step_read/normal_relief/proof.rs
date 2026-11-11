@@ -71,6 +71,16 @@ fn curve_matches(
     let Some((center, axis, r, sweep)) = circle(actual) else {
         return false;
     };
+    if !matches!(
+        (actual, edge),
+        (Curve::Circle(_), ProfileEdge::Circle { .. })
+            | (
+                Curve::Arc(_) | Curve::Semicircle(_),
+                ProfileEdge::Arc { .. }
+            )
+    ) {
+        return false;
+    }
     let axis = axis.map(|v| if forward { v } else { -v });
     let expected_axis = frame.axes[2].map(|v| if clockwise { -v } else { v });
     near(center, frame.world([xy[0], xy[1], z_mm]), epsilon)
@@ -78,14 +88,6 @@ fn curve_matches(
         && normal(axis, expected_axis, radius, epsilon)
         && (sweep - edge.signed_sweep_rad().expect("circular sweep").abs()).abs() * radius
             <= epsilon
-        && matches!(
-            (actual, edge),
-            (Curve::Circle(_), ProfileEdge::Circle { .. })
-                | (
-                    Curve::Arc(_) | Curve::Semicircle(_),
-                    ProfileEdge::Arc { .. }
-                )
-        )
 }
 pub(super) fn edges(
     shell: &Shell<'_, '_>,
