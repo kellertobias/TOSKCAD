@@ -750,6 +750,7 @@ fn verify_torus_drawing_scene(torus: &multicad_kernel::Solid) {
         section_offset_mm: Some(0.),
         ..options
     };
+    verify_offset_torus_sections(torus, transverse_cut);
     let middle = stock([-1., -2., -2.], [2, 4, 1]);
     let transverse = project(&[torus, &middle], transverse_cut);
     assert_eq!(transverse.len(), 6);
@@ -905,6 +906,130 @@ fn verify_torus_drawing_scene(torus: &multicad_kernel::Solid) {
             );
         }
     }
+}
+
+fn verify_offset_torus_sections(
+    torus: &multicad_kernel::Solid,
+    options: multicad_kernel::DrawingProjection,
+) {
+    use multicad_core::drawings::{VectorCurve, VectorRole};
+    use multicad_kernel::{DrawingHatch, DrawingProjection, DrawingSolid, project_drawing};
+
+    let distance = |p: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+        let d: [f64; 2] = std::array::from_fn(|i| b[i] - a[i]);
+        let q: [f64; 2] = std::array::from_fn(|i| p[i] - a[i]);
+        let t = ((q[0] * d[0] + q[1] * d[1]) / (d[0] * d[0] + d[1] * d[1])).clamp(0., 1.);
+        (q[0] - t * d[0]).hypot(q[1] - t * d[1])
+    };
+    let input = DrawingSolid {
+        solid: torus,
+        hatch: None,
+    };
+    for (offset, loops) in [
+        (2., 2),
+        (3.9999, 2),
+        (4., 2),
+        (4.0001, 1),
+        (4.5, 1),
+        (5.5, 1),
+        (5.9999, 1),
+    ] {
+        let vectors = project_drawing(
+            std::slice::from_ref(&input),
+            DrawingProjection {
+                section_offset_mm: Some(offset),
+                ..options
+            },
+        )
+        .unwrap_or_else(|e| panic!("Offset {offset}: {e}"));
+        assert!(
+            vectors.len() < 5_000,
+            "Offset {offset}: {} chords",
+            vectors.len()
+        );
+        let mut closed = 0;
+        let mut start = None;
+        for vector in &vectors {
+            assert_eq!(vector.role, VectorRole::Section);
+            let VectorCurve::Line { a, b } = vector.curve else {
+                panic!("Expected bounded section chords");
+            };
+            let [u, v]: [f64; 2] = std::array::from_fn(|i| (a[i] + b[i]) / 2.);
+            assert!(
+                ((u.hypot(offset) - 5.).hypot(v) - 1.).abs() <= options.chord_tolerance_mm,
+                "Offset {offset}, chord midpoint ({u}, {v})"
+            );
+            if *start.get_or_insert(a) == b {
+                closed += 1;
+                start = None;
+            }
+        }
+        assert_eq!(closed, loops, "Offset {offset}");
+        assert_eq!(start, None);
+        // Independent tube-angle samples, restricted to the radial portion
+        // the cutting plane can actually reach.
+        for step in 0..720 {
+            let angle = f64::from(step) * std::f64::consts::TAU / 720.;
+            let radial = 5. + angle.cos();
+            if radial < offset {
+                continue;
+            }
+            let x = ((radial - offset) * (radial + offset)).sqrt();
+            for point in [[x, angle.sin()], [-x, angle.sin()]] {
+                assert!(vectors.iter().any(|edge| matches!(edge.curve,
+                    VectorCurve::Line { a, b } if distance(point, a, b) <= options.chord_tolerance_mm)),
+                    "Offset {offset}, exact point {point:?}");
+            }
+        }
+    }
+    let cropped = project_drawing(
+        &[DrawingSolid {
+            solid: torus,
+            hatch: Some(DrawingHatch {
+                angle_rad: 0.,
+                spacing_mm: 0.1,
+                line_width_mm: 0.02,
+                pattern: multicad_core::materials::HatchPattern::Lines,
+            }),
+        }],
+        DrawingProjection {
+            section_offset_mm: Some(4.5),
+            section_u_mm: Some([-0.6, 2.]),
+            section_v_mm: Some([-0.4, 0.7]),
+            ..options
+        },
+    )
+    .unwrap();
+    assert!(cropped.iter().any(|edge| edge.role == VectorRole::Hatch));
+    assert!(
+        cropped
+            .iter()
+            .flat_map(|edge| &edge.preview_mm)
+            .all(|[u, v]| (-0.600001..=2.000001).contains(u) && (-0.400001..=0.700001).contains(v))
+    );
+    assert!(
+        cropped
+            .iter()
+            .filter(|edge| edge.role == VectorRole::Hatch)
+            .all(|edge| {
+                let [a, b] = &edge.preview_mm[..] else {
+                    return false;
+                };
+                let u = (a[0] + b[0]) / 2.;
+                let v = (a[1] + b[1]) / 2.;
+                (u.hypot(4.5) - 5.).hypot(v) < 1.001
+            })
+    );
+    let error = project_drawing(
+        &[input],
+        DrawingProjection {
+            section_offset_mm: Some(2.),
+            maximum_curves: 2,
+            ..options
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, multicad_kernel::GeometryErrorKind::Limit);
 }
 
 #[test]

@@ -6,12 +6,14 @@ use multicad_rust_kernel::{
 };
 use std::f64::consts::{PI, TAU};
 
+mod transverse;
+
 const ANGULAR: f64 = 64. * f64::EPSILON;
 
 fn unsupported() -> GeometryError {
     err(
         GeometryErrorKind::Unsupported,
-        "Rust torus drawings require an axial or transverse view. Retained sections require an axial view, and transverse cuts must pass through the torus axis.",
+        "Rust torus drawings require an axial or transverse view. Retained sections require an axial view.",
     )
 }
 
@@ -123,11 +125,19 @@ pub(super) fn project(
                 return Ok(Vec::new());
             }
             let roundoff = ANGULAR * z.abs().max(depth.abs()).max(major);
+            let length = a.hypot(b);
+            let across = [-b / length, a / length];
             if delta.abs() <= roundoff {
-                let length = a.hypot(b);
-                let across = [-b / length, a / length];
                 return diametral_cut(input, center, across, [major, minor], options);
             }
+            return transverse::project(
+                input,
+                center,
+                across,
+                [major, minor],
+                delta.abs(),
+                options,
+            );
         }
         return Err(unsupported());
     }

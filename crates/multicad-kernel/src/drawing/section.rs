@@ -131,7 +131,7 @@ fn project_planar(
     Ok(output)
 }
 
-fn publish_hatch(
+pub(super) fn publish_hatch(
     source: usize,
     hatch: DrawingHatch,
     boundary: &[[[f64; 2]; 2]],
