@@ -25,14 +25,14 @@ impl Relief {
 }
 fn once(relief: &Relief, options: Tessellation) -> Result<DisplayMesh, MeshError> {
     let graph = relief.boundary();
+    if graph.vertices.len() > 3 * options.triangle_limit {
+        return Err(MeshError::BudgetExceeded);
+    }
     let mut mesh = DisplayMesh {
         vertices: graph.vertices.iter().flatten().copied().collect(),
         indices: vec![],
         face_indices: vec![],
     };
-    if graph.vertices.len() > 3 * options.triangle_limit {
-        return Err(MeshError::BudgetExceeded);
-    }
     let mut samples = Vec::with_capacity(graph.edges.len());
     for edge in &graph.edges {
         let count = match edge.curve {
@@ -158,4 +158,151 @@ fn push(
     }
     mesh.triangle(triangle, face as u32);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn fixture(round: bool) -> Relief {
+        let square = |r: f64| {
+            let p = [[-r, -r], [r, -r], [r, r], [-r, r]];
+            (0..4)
+                .map(|i| Edge::Line {
+                    a: p[i],
+                    b: p[(i + 1) % 4],
+                })
+                .collect()
+        };
+        let ring = |r| {
+            if round {
+                vec![Edge::Circle {
+                    center: [0., 0.],
+                    radius_mm: r,
+                    clockwise: false,
+                }]
+            } else {
+                square(r)
+            }
+        };
+        let base = Sweep::new(vec![ring(5.)], 4., 1e-7, 1e-5).unwrap();
+        let motif = Sweep::new(vec![ring(0.5)], 1., 1e-7, 1e-5).unwrap();
+        Relief::new(base, vec![motif], Kind::Raised, 1e-7, 1e-5).unwrap()
+    }
+    fn options() -> Tessellation {
+        Tessellation {
+            deflection: 0.001,
+            angle: 0.08,
+            triangle_limit: 10000,
+        }
+    }
+    #[test]
+    fn bounded_mesh_failures_and_circular_chord_normals_are_observable() {
+        let relief = fixture(true);
+        let mut requested = options();
+        requested.deflection = 1e-16;
+        assert_eq!(
+            relief.mesh(requested).err(),
+            Some(MeshError::UnresolvedBoundary)
+        );
+        requested = options();
+        requested.angle = 0.;
+        assert_eq!(
+            relief.mesh(requested).err(),
+            Some(MeshError::InvalidOptions)
+        );
+        for limit in [1, 20, 100] {
+            requested = options();
+            requested.triangle_limit = limit;
+            if limit == 100 {
+                requested.deflection = 0.1;
+            }
+            assert_eq!(
+                relief.mesh(requested).err(),
+                Some(MeshError::BudgetExceeded)
+            );
+        }
+        requested = options();
+        requested.triangle_limit = 25;
+        assert_eq!(
+            fixture(false).mesh(requested).err(),
+            Some(MeshError::BudgetExceeded)
+        );
+        let mesh = relief.mesh(options()).unwrap();
+        for (triangle, face) in mesh
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(&mesh.face_indices)
+        {
+            if let Surface::Cylinder { radius_mm, .. } =
+                relief.boundary().faces[*face as usize].surface
+            {
+                let p = triangle
+                    .iter()
+                    .map(|&id| graph_point(&mesh, id as usize))
+                    .collect::<Vec<_>>();
+                let edge = p
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(i, a)| p[i + 1..].iter().map(move |b| (*a, *b)))
+                    .find(|(a, b)| a[2] == b[2])
+                    .unwrap();
+                let center = [edge.0[0].midpoint(edge.1[0]), edge.0[1].midpoint(edge.1[1])];
+                let chord_error = radius_mm - center[0].hypot(center[1]);
+                let normal_error = 2.
+                    * ((edge.0[0] - edge.1[0]).hypot(edge.0[1] - edge.1[1]) / (2. * radius_mm))
+                        .asin();
+                assert!(chord_error <= options().deflection);
+                assert!(normal_error <= options().angle);
+            }
+        }
+    }
+    #[test]
+    fn a_corrupted_cached_graph_is_refused_instead_of_publishing_a_partial_mesh() {
+        let mut relief = fixture(false);
+        relief.boundary.vertices[1] = relief.boundary.vertices[0];
+        assert_eq!(
+            relief.mesh(options()).err(),
+            Some(MeshError::UnresolvedBoundary)
+        );
+        let original = fixture(true);
+        let face = original
+            .boundary
+            .faces
+            .iter()
+            .position(|f| matches!(f.surface, Surface::Cylinder { .. }))
+            .unwrap();
+        let mut relief = original.clone();
+        let edge = relief.boundary.faces[face].loops[0]
+            .iter()
+            .position(|u| matches!(relief.boundary.edges[u.edge].curve, Curve::Profile { .. }))
+            .unwrap();
+        relief.boundary.faces[face].loops[0].remove(edge);
+        assert_eq!(
+            once(&relief, options()).err(),
+            Some(MeshError::UnresolvedBoundary)
+        );
+        let mut relief = original;
+        let high = relief.boundary.faces[face].loops[0]
+            .iter()
+            .filter_map(|u| match relief.boundary.edges[u.edge].curve {
+                Curve::Profile { z_mm, .. } => Some((z_mm, u.edge)),
+                _ => None,
+            })
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+            .unwrap()
+            .1;
+        if let Curve::Profile {
+            edge: Edge::Circle { radius_mm, .. },
+            ..
+        } = &mut relief.boundary.edges[high].curve
+        {
+            *radius_mm *= 1.1;
+        }
+        assert_eq!(
+            once(&relief, options()).err(),
+            Some(MeshError::UnresolvedBoundary)
+        );
+    }
 }

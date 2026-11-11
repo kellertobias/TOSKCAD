@@ -256,3 +256,299 @@ fn bad_contact_overlap_holes_floor_and_cancellation_leave_inputs_unchanged() {
     assert_eq!(base, retained);
     Relief::new(base, vec![motif], Kind::Raised, TOL, MIN).unwrap();
 }
+
+#[test]
+fn positive_column_moments_surface_properties_and_curve_charts_are_analytic() {
+    let base = Sweep::new(vec![rectangle([0., 0.], [10., 8.])], 4., TOL, MIN).unwrap();
+    let motifs = vec![
+        Sweep::new(vec![rectangle([1., 2.], [3., 3.])], 1.5, TOL, MIN).unwrap(),
+        Sweep::new(vec![circle([7., 5.], 0.5, false)], 0.75, TOL, MIN).unwrap(),
+    ];
+    for kind in [Kind::Raised, Kind::Recessed] {
+        let relief = Relief::new(base.clone(), motifs.clone(), kind, TOL, MIN).unwrap();
+        let sign = if kind == Kind::Raised { 1. } else { -1. };
+        let pieces = [
+            (3., [2., 2.5, 4. + sign * 0.75]),
+            (PI * 0.25 * 0.75, [7., 5., 4. + sign * 0.375]),
+        ];
+        let volume = 320. + sign * pieces.iter().map(|p| p.0).sum::<f64>();
+        let expected: [f64; 3] = std::array::from_fn(|i| {
+            (320. * [5., 4., 2.][i] + sign * pieces.iter().map(|(v, c)| v * c[i]).sum::<f64>())
+                / volume
+        });
+        assert!((relief.volume_mm3() - volume).abs() < 1e-12);
+        assert!(
+            relief
+                .centroid_mm()
+                .into_iter()
+                .zip(expected)
+                .all(|(a, b)| (a - b).abs() < 1e-12)
+        );
+        assert_eq!(relief.kind(), kind);
+        assert_eq!(relief.tolerance_mm(), TOL);
+        assert_eq!(relief.minimum_mm(), MIN);
+        assert!(relief.boundary_error_mm() >= 0. && relief.boundary_error_mm() < TOL / 32.);
+        assert!(relief.contains([9., 7., 2.], TOL));
+        assert_eq!(relief.exposed_cap().rings().len(), 3);
+        let area = 304. + 1.5 * 6. + 0.75 * PI;
+        assert!((relief.surface_area_mm2() - area).abs() < 1e-12);
+        assert!(
+            (relief
+                .boundary()
+                .faces
+                .iter()
+                .map(|f| f.area_mm2)
+                .sum::<f64>()
+                - area)
+                .abs()
+                < 1e-12
+        );
+        for edge in &relief.boundary().edges {
+            assert_eq!(
+                edge.curve.point(0.),
+                relief.boundary().vertices[edge.vertices[0]]
+            );
+            assert_eq!(
+                edge.curve.point(1.),
+                relief.boundary().vertices[edge.vertices[1]]
+            );
+            assert!(edge.curve.point(0.5).into_iter().all(f64::is_finite));
+        }
+        assert!(!relief.contains([f64::NAN, 0., 0.], TOL));
+        assert!(!relief.contains([0., 0., 0.], -1.));
+        assert!(!relief.contains([-1., 0., 0.], TOL));
+    }
+}
+
+#[test]
+fn request_precision_floor_capacity_and_every_cancellation_boundary_fail_closed() {
+    let base = base();
+    let motif = motifs().remove(0);
+    for (tolerance, minimum) in [(f64::NAN, MIN), (0., MIN), (TOL, TOL)] {
+        assert_eq!(
+            Relief::new(
+                base.clone(),
+                vec![motif.clone()],
+                Kind::Raised,
+                tolerance,
+                minimum
+            )
+            .err(),
+            Some(Error::Invalid)
+        );
+    }
+    assert_eq!(
+        Relief::new(base.clone(), vec![], Kind::Raised, TOL, MIN).err(),
+        Some(Error::Invalid)
+    );
+    let hole_motif = Sweep::new(
+        vec![rectangle([1., 1.], [5., 5.]), circle([3., 3.], 0.5, true)],
+        1.,
+        TOL,
+        MIN,
+    )
+    .unwrap();
+    assert_eq!(
+        Relief::new(base.clone(), vec![hole_motif], Kind::Raised, TOL, MIN).err(),
+        Some(Error::Invalid)
+    );
+    let tall = Sweep::new(motif.rings().to_vec(), 1e7, TOL, MIN).unwrap();
+    assert_eq!(
+        Relief::new(base.clone(), vec![tall], Kind::Raised, TOL, MIN).err(),
+        Some(Error::Limit)
+    );
+    assert_eq!(
+        Relief::new(
+            base.clone(),
+            vec![motif.clone()],
+            Kind::Raised,
+            1e-13,
+            1e-12
+        )
+        .err(),
+        Some(Error::Unresolved)
+    );
+    let tiny = Sweep::new(vec![circle([3., 3.], 1e-8, false)], 1., 1e-10, 1e-9).unwrap();
+    assert_eq!(
+        Relief::new(base.clone(), vec![tiny], Kind::Raised, 1e-10, 1e-9).err(),
+        Some(Error::Unresolved)
+    );
+    let outside = Sweep::new(vec![rectangle([25., 2.], [26., 3.])], 1., TOL, MIN).unwrap();
+    assert_eq!(
+        Relief::new(base.clone(), vec![outside], Kind::Raised, TOL, MIN).err(),
+        Some(Error::Invalid)
+    );
+    let mut arc = motifs().remove(1).rings().to_vec();
+    if let Edge::Arc { b, .. } = &mut arc[0][1] {
+        b[1] += 1e-9;
+    }
+    if let Edge::Line { a, .. } = &mut arc[0][2] {
+        a[1] += 1e-9;
+    }
+    let arc = Sweep::new(arc, 1., TOL, MIN).unwrap();
+    assert_eq!(
+        Relief::new(base.clone(), vec![arc], Kind::Raised, TOL, MIN).err(),
+        Some(Error::Unresolved)
+    );
+    let calls = std::cell::Cell::new(0);
+    let count = || {
+        calls.set(calls.get() + 1);
+        false
+    };
+    let retained = Relief::new_with_interrupt(
+        base.clone(),
+        vec![motif.clone()],
+        Kind::Raised,
+        TOL,
+        MIN,
+        Some(&count),
+    )
+    .unwrap();
+    for stop in 1..=calls.get() {
+        let seen = std::cell::Cell::new(0);
+        let cancelled = || {
+            seen.set(seen.get() + 1);
+            seen.get() >= stop
+        };
+        assert_eq!(
+            Relief::new_with_interrupt(
+                base.clone(),
+                vec![motif.clone()],
+                Kind::Raised,
+                TOL,
+                MIN,
+                Some(&cancelled)
+            )
+            .err(),
+            Some(Error::Cancelled),
+            "checkpoint{stop}"
+        );
+    }
+    assert_eq!(
+        retained,
+        Relief::new(base, vec![motif], Kind::Raised, TOL, MIN).unwrap()
+    );
+}
+
+#[test]
+fn large_combined_cap_and_underflowing_mass_are_explicitly_refused() {
+    let ring = (0..1024)
+        .map(|i| {
+            let point = |j: usize| {
+                let a = std::f64::consts::TAU * j as f64 / 1024.;
+                [3. + 0.5 * a.cos(), 3. + 0.5 * a.sin()]
+            };
+            Edge::Line {
+                a: point(i),
+                b: point((i + 1) % 1024),
+            }
+        })
+        .collect::<Vec<_>>();
+    let motif = Sweep::new(vec![ring.clone()], 1., TOL, MIN).unwrap();
+    assert_eq!(
+        Relief::new(base(), vec![motif; 17], Kind::Raised, TOL, MIN).err(),
+        Some(Error::Limit)
+    );
+    let oversized = Sweep::relief_cap(vec![ring; 17], 1., TOL, MIN, None).unwrap_err();
+    assert_eq!(cap_error(oversized), Error::Limit);
+    let base = Sweep::new(
+        vec![rectangle([0., 0.], [1e-13, 1e-13])],
+        1e-300,
+        1e-311,
+        1e-310,
+    )
+    .unwrap();
+    let motif = Sweep::new(
+        vec![rectangle([2e-14, 2e-14], [4e-14, 4e-14])],
+        1e-300,
+        1e-311,
+        1e-310,
+    )
+    .unwrap();
+    assert_eq!(
+        Relief::new(base, vec![motif], Kind::Raised, 1e-311, 1e-310).err(),
+        Some(Error::Unresolved)
+    );
+}
+
+#[test]
+fn step_precision_and_cached_boundary_failures_roll_back_the_writer() {
+    use crate::step::{StepError, Writer, write_normal_relief};
+    let relief = Relief::new(base(), motifs(), Kind::Raised, TOL, MIN).unwrap();
+    let origin = [0.; 3];
+    let u = [1., 0., 0.];
+    let v = [0., 1., 0.];
+    let expected = write_normal_relief(&relief, origin, u, v).unwrap();
+    let mut invalid = relief.clone();
+    invalid.volume += 1.;
+    assert_eq!(
+        write_normal_relief(&invalid, origin, u, v).err(),
+        Some(StepError::Unsupported)
+    );
+    let mut periodic = relief.clone();
+    let edge = periodic
+        .boundary
+        .edges
+        .iter_mut()
+        .find(|e| {
+            matches!(
+                e.curve,
+                Curve::Profile {
+                    edge: Edge::Circle { .. },
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    edge.vertices[1] = 0;
+    assert_eq!(
+        write_normal_relief(&periodic, origin, u, v).err(),
+        Some(StepError::InvalidGeometry)
+    );
+    let mut arc = relief.clone();
+    let curve = arc
+        .boundary
+        .edges
+        .iter_mut()
+        .find(|e| {
+            matches!(
+                e.curve,
+                Curve::Profile {
+                    edge: Edge::Arc { .. },
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    if let Curve::Profile {
+        edge: Edge::Arc { center, .. },
+        ..
+    } = &mut curve.curve
+    {
+        center[1] += 0.1;
+    }
+    assert!(write_normal_relief(&arc, origin, u, v).is_err());
+    let huge = Sweep::new(vec![rectangle([0., 0.], [1e6, 1e6])], 4., TOL, MIN).unwrap();
+    let motif = Sweep::new(vec![rectangle([1., 1.], [3., 3.])], 1., TOL, MIN).unwrap();
+    let huge = Relief::new(huge, vec![motif], Kind::Raised, TOL, MIN).unwrap();
+    assert_eq!(
+        write_normal_relief(&huge, origin, [(1. + 8e-11_f64).sqrt(), 0., 0.], v).err(),
+        Some(StepError::Unsupported)
+    );
+    assert_eq!(
+        write_normal_relief(&relief, [1e15; 3], [0.8, 0.6, 0.], [-0.36, 0.48, 0.8]).err(),
+        Some(StepError::Unsupported)
+    );
+    let mut writer = Writer::new();
+    assert!(writer.append_normal_relief(&invalid, origin, u, v).is_err());
+    assert!(
+        writer
+            .append_normal_relief(&relief, origin, [0.; 3], v)
+            .is_err()
+    );
+    writer.append_normal_relief(&relief, origin, u, v).unwrap();
+    assert_eq!(writer.finish().unwrap(), expected);
+    // Proper subnormal rotations exercise the same outward arithmetic guards
+    // without losing a nonzero product merely because it underflows f64.
+    write_normal_relief(&relief, origin, [1., 1e-200, 0.], [-1e-200, 1., 0.]).unwrap();
+}

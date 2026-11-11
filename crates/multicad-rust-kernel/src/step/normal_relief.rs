@@ -20,15 +20,15 @@ pub(super) fn encode(
     let mut candidate = StepFile::new();
     let solid = encode_shell(&mut candidate, relief, &placement)?;
     candidate.finish(vec![solid]);
-    let read = crate::step_read::read_analytic_solid(&candidate.data, relief.tolerance_mm())
-        .map_err(|_| StepError::Unsupported)?;
-    if read.solid_count != 1
-        || read.face_count != relief.boundary().faces.len()
-        || (read.volume_mm3 - relief.volume_mm3()).abs()
-            > relief.tolerance_mm() * relief.surface_area_mm2()
-    {
-        return Err(StepError::Unsupported);
-    }
+    crate::step_read::verify_normal_relief(
+        &candidate.data,
+        relief,
+        placement.origin,
+        placement.u,
+        placement.v,
+        relief.tolerance_mm(),
+    )
+    .map_err(|_| StepError::Unsupported)?;
     encode_shell(file, relief, &placement)
 }
 fn add_up(a: f64, b: f64) -> f64 {
@@ -72,9 +72,9 @@ fn evaluation_error(placement: &Placement, p: Point) -> f64 {
     for i in 0..3 {
         let mut value = placement.origin[i];
         let mut error = 0.;
-        for j in 0..3 {
-            let term = axes[j][i] * p[j];
-            error = add_up(error, product_error(axes[j][i], p[j], term));
+        for (axis, coordinate) in axes.iter().zip(p) {
+            let term = axis[i] * coordinate;
+            error = add_up(error, product_error(axis[i], coordinate, term));
             let sum = value + term;
             let part = sum - value;
             error = add_up(error, ((value - (sum - part)) + (term - part)).abs());
@@ -95,8 +95,8 @@ fn precision(relief: &Relief, placement: &Placement) -> Result<(), StepError> {
     }
     let bounds = relief.bounds();
     let mut extent = 0.;
-    for i in 0..3 {
-        let e = bounds[0][i].abs().max(bounds[1][i].abs());
+    for (low, high) in bounds[0].into_iter().zip(bounds[1]) {
+        let e = low.abs().max(high.abs());
         extent = add_up(extent, mul_up(e, e));
     }
     let sqrt = |value: f64| {
