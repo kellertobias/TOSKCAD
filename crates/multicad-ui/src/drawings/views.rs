@@ -22,10 +22,15 @@ impl DrawingEditor {
                     && draft == &self.draft
             })
     }
-    fn candidate_document(&self, session: &Session) -> Result<Document, String> {
+    pub(super) fn candidate_document(&self, session: &Session) -> Result<Document, String> {
         let (Some(id), Some(draft)) = (self.book, self.draft.as_ref()) else {
             return Ok(session.document().clone());
         };
+        // A saved page already belongs to this validated document revision.
+        // Keep its shared dependency order and content hash for the worker.
+        if self.revision == Some(session.revision()) && !self.dirty() {
+            return Ok(session.document().clone());
+        }
         let mut book = drawings::read(session.document(), id).map_err(|e| e.to_string())?;
         let page = book
             .pages
@@ -44,12 +49,12 @@ impl DrawingEditor {
             self.preview_input = None;
             return;
         }
-        if self.validate_draft().is_err() {
-            self.feed.clear();
-            self.preview_input = None;
-            return;
-        }
         if !self.preview_matches(session) {
+            if self.validate_draft().is_err() {
+                self.feed.clear();
+                self.preview_input = None;
+                return;
+            }
             self.preview_input = Some((
                 session.document().id(),
                 session.revision(),

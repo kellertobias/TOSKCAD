@@ -3,6 +3,48 @@ use multicad_core::document::Document;
 fn session() -> Session {
     Session::new(Document::new("Drawing UI").unwrap()).unwrap()
 }
+
+#[test]
+fn saved_page_preview_reuses_the_canonical_document_snapshot() {
+    let (mut editor, mut session, source) = view_editor(false);
+    editor
+        .invoke(&mut session, DrawingTool::Projection, Channel::Ui)
+        .unwrap();
+    editor.draft.as_mut().unwrap().views[0].source = drawings::ViewSource::Model {
+        entities: vec![source],
+    };
+    publish_editor(&mut editor, &session);
+    editor
+        .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
+        .unwrap();
+
+    let source = session.document();
+    let saved = editor.candidate_document(&session).unwrap();
+    let canonical_order = source.validated().unwrap();
+    assert!(std::ptr::eq(
+        saved.validated().unwrap().topological_order(),
+        canonical_order.topological_order(),
+    ));
+
+    let draft = editor.draft.as_mut().unwrap();
+    draft.info.title = "Draft preview".into();
+    let draft_id = draft.id;
+    let candidate = editor.candidate_document(&session).unwrap();
+    let book = editor.book.unwrap();
+    let title = |document: &Document| {
+        drawings::read(document, book)
+            .unwrap()
+            .pages
+            .into_iter()
+            .find(|page| page.id == draft_id)
+            .unwrap()
+            .info
+            .title
+    };
+    assert_eq!(title(&candidate), "Draft preview");
+    assert_ne!(title(source), "Draft preview");
+}
+
 #[test]
 fn editor_pages_preserve_independent_drafts_and_undoable_authored_content() {
     let mut session = session();
