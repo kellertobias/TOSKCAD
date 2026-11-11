@@ -739,6 +739,28 @@ fn verify_torus_drawing_scene(torus: &multicad_kernel::Solid) {
         assert!((4.199..=5.801).contains(&u.hypot(v)));
     }
 
+    let windowed_axial = project(
+        &[torus, &rear],
+        DrawingProjection {
+            section_offset_mm: Some(2.),
+            section_u_mm: Some([1.5, 3.]),
+            ..options
+        },
+    );
+    let axial_side: Vec<_> = visible_torus_side(&windowed_axial, 0, 3.)
+        .flatten()
+        .collect();
+    assert!(
+        axial_side
+            .iter()
+            .any(|y| (y.abs() - 7_f64.sqrt()).abs() < 1e-5)
+    );
+    assert!(
+        axial_side
+            .iter()
+            .any(|y| (y.abs() - 27_f64.sqrt()).abs() < 1e-5)
+    );
+    assert!(axial_side.iter().all(|y| y.abs() >= 7_f64.sqrt() - 1e-5));
     let screen = PlaneFrame {
         u: [0., 1., 0.],
         v: [0., 0., 1.],
@@ -813,6 +835,7 @@ fn verify_torus_drawing_scene(torus: &multicad_kernel::Solid) {
             section_offset_mm: Some(-1.8),
             section_depth_mm: Some(1.4),
             section_u_mm: Some([-7., 7.]),
+            section_v_mm: Some([-4.5, 4.5]),
             ..options
         },
     );
@@ -822,6 +845,7 @@ fn verify_torus_drawing_scene(torus: &multicad_kernel::Solid) {
             .any(|edge| touches(edge, VectorRole::Visible))
     );
     assert!(retained.iter().any(|edge| edge.role == VectorRole::Section));
+    assert!(visible_torus_side(&retained, 1, -4.5).next().is_some());
     let transverse_cut = DrawingProjection {
         frame: screen,
         section_only: true,
@@ -854,6 +878,21 @@ fn verify_torus_drawing_scene(torus: &multicad_kernel::Solid) {
             .iter()
             .any(|[a, b]| (a + 12_f64.sqrt()).abs() < 1e-6 && (b - 12_f64.sqrt()).abs() < 1e-6),
         "{retained_visible:?}"
+    );
+    let windowed_transverse = project(
+        &[torus],
+        DrawingProjection {
+            section_only: false,
+            section_offset_mm: Some(-0.5),
+            section_depth_mm: Some(2.5),
+            section_u_mm: Some([-4.5, 7.]),
+            ..transverse_cut
+        },
+    );
+    assert!(
+        visible_torus_side(&windowed_transverse, 0, -4.5)
+            .next()
+            .is_some()
     );
     let middle = stock([-1., -2., -2.], [2, 4, 1]);
     let transverse = project(&[torus, &middle], transverse_cut);
@@ -1010,6 +1049,24 @@ fn verify_torus_drawing_scene(torus: &multicad_kernel::Solid) {
             );
         }
     }
+}
+
+fn visible_torus_side(
+    edges: &[multicad_kernel::ProjectedVector],
+    axis: usize,
+    level: f64,
+) -> impl Iterator<Item = [f64; 2]> + '_ {
+    use multicad_core::drawings::{VectorCurve, VectorRole};
+    edges.iter().filter_map(move |edge| match edge.curve {
+        VectorCurve::Line { a, b }
+            if edge.source_index == 0
+                && edge.role == VectorRole::Visible
+                && [a, b].into_iter().all(|p| (p[axis] - level).abs() < 1e-8) =>
+        {
+            Some([a[1 - axis], b[1 - axis]])
+        }
+        _ => None,
+    })
 }
 
 fn verify_oblique_torus_sections(

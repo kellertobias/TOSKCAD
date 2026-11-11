@@ -1,6 +1,6 @@
 //! Oblique silhouettes and plane cuts of a ring torus.
 use super::*;
-use multicad_rust_kernel::planar_projection::{ContourCandidate, HiddenCandidate, LineCandidate};
+use multicad_rust_kernel::planar_projection::{ContourCandidate, LineCandidate};
 use std::f64::consts::FRAC_PI_2;
 
 type Point = [f64; 2];
@@ -290,7 +290,7 @@ pub(in crate::drawing) fn contours(
     options: DrawingProjection,
     source: usize,
     face: usize,
-) -> Result<(Vec<ContourCandidate>, Vec<HiddenCandidate>), GeometryError> {
+) -> Result<(Vec<ContourCandidate>, Vec<LineCandidate>), GeometryError> {
     if axis[2] < 0. {
         axis = axis.map(|component| -component);
     }
@@ -360,7 +360,7 @@ pub(in crate::drawing) fn contours(
                     remaining = remaining.checked_sub(1).ok_or_else(limit)?;
                     let line = LineCandidate { source, points };
                     if is_hidden {
-                        hidden.push(HiddenCandidate::Line(line));
+                        hidden.push(line);
                     } else {
                         visible.push(ContourCandidate { line, face });
                     }

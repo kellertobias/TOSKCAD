@@ -1,5 +1,6 @@
 //! Clip exact shell edges and blockers to a section's retained depth.
 use super::*;
+mod torus_side;
 use multicad_rust_kernel::{
     planar_projection::{
         self, AnalyticFace, Body, ContourCandidate, DepthRange, FaceTrim, HiddenCandidate,
@@ -217,9 +218,9 @@ impl Retained {
             let extent = major * axis[(i + 1) % 3].hypot(axis[(i + 2) % 3]) + minor;
             [center[i] - extent, center[i] + extent]
         });
-        if !self.torus_window_contains(bounds)? {
+        let Some(sides) = self.torus_window_sides(bounds) else {
             return Ok(());
-        }
+        };
         let face = self.blockers.len();
         self.blockers.push(blocker);
         let used = (self.contours.len() + self.hidden.len()) as u32;
@@ -235,8 +236,22 @@ impl Retained {
             source,
             face,
         )?;
-        self.contours.extend(visible);
-        self.hidden.extend(hidden);
+        for candidate in visible {
+            if let Some(line) = depth
+                .clip_line(candidate.line)
+                .map_err(planar::projection_error)?
+            {
+                self.contours.push(ContourCandidate { line, ..candidate });
+            }
+        }
+        for line in hidden {
+            self.hidden.extend(
+                depth
+                    .clip_line(line)
+                    .map_err(planar::projection_error)?
+                    .map(HiddenCandidate::Line),
+            );
+        }
         let near = self
             .options
             .section_offset_mm
@@ -245,6 +260,7 @@ impl Retained {
             .options
             .section_depth_mm
             .map(|distance| near - distance);
+        self.torus_sides(&input, placement, radii, (source, face), sides)?;
         self.torus_caps(input, placement, radii, source, near, far)
     }
 
@@ -291,9 +307,10 @@ impl Retained {
             let extent = axis[i].abs() * axial + across[i] * width;
             [center[i] - extent, center[i] + extent]
         });
-        if !self.torus_window_contains(bounds)? {
+        let Some(sides) = self.torus_window_sides(bounds) else {
             return Ok(());
-        }
+        };
+        let face = self.blockers.len();
         self.blockers.push(blocker);
         let at_midplane = |z: f64| {
             (z - center[2]).abs() <= torus::ANGULAR * z.abs().max(center[2].abs()).max(major)
@@ -308,29 +325,97 @@ impl Retained {
                 self.add_torus_rail(rim, depth)?;
             }
         }
+        self.torus_sides(&input, placement, radii, (source, face), sides)?;
         self.torus_caps(input, placement, radii, source, near, far)
     }
 
-    fn torus_window_contains(&self, bounds: [[f64; 2]; 2]) -> Result<bool, GeometryError> {
+    fn torus_window_sides(&self, bounds: [[f64; 2]; 2]) -> Option<[[Option<f64>; 2]; 2]> {
         let windows = [self.options.section_u_mm, self.options.section_v_mm];
         if windows
             .into_iter()
             .zip(bounds)
             .any(|(window, [min, max])| window.is_some_and(|[lo, hi]| lo >= max || hi <= min))
         {
-            return Ok(false);
+            return None;
         }
-        if windows
-            .into_iter()
-            .zip(bounds)
-            .any(|(window, [min, max])| window.is_some_and(|[lo, hi]| lo > min || hi < max))
-        {
-            return Err(err(
-                GeometryErrorKind::Unsupported,
-                "Rust retained torus sections require the window to contain the retained torus",
-            ));
+        Some(std::array::from_fn(|i| {
+            windows[i].map_or([None; 2], |[lo, hi]| {
+                [
+                    (lo > bounds[i][0]).then_some(lo),
+                    (hi < bounds[i][1]).then_some(hi),
+                ]
+            })
+        }))
+    }
+
+    fn torus_sides(
+        &mut self,
+        input: &DrawingSolid<'_>,
+        placement: PlaneFrame,
+        radii: [f64; 2],
+        owner: (usize, usize),
+        sides: [[Option<f64>; 2]; 2],
+    ) -> Result<(), GeometryError> {
+        let view = self.options.frame;
+        let axes = planar::view_axes(view);
+        let (center, axis) = torus::drawing_frame(placement, view);
+        let near = self
+            .options
+            .section_offset_mm
+            .expect("retained section depth");
+        let minimum = center[2] - radii[0] * axis[0].hypot(axis[1]) - radii[1];
+        let far = self
+            .options
+            .section_depth_mm
+            .map_or(minimum - 1., |distance| near - distance);
+        let windows = [self.options.section_u_mm, self.options.section_v_mm];
+        let tolerance = input.solid.geometry_policy().linear_tolerance_mm;
+        let side_input = DrawingSolid {
+            solid: input.solid,
+            hatch: None,
+        };
+        for (axis, coordinates) in sides.into_iter().enumerate() {
+            for coordinate in coordinates.into_iter().flatten() {
+                let used = (self.contours.len() + self.hidden.len()) as u32;
+                let maximum_curves = self.options.maximum_curves.saturating_sub(used);
+                let maximum_points = self.options.maximum_points.saturating_sub(2 * used);
+                if maximum_curves == 0 || maximum_points < 2 {
+                    return Err(limit());
+                }
+                // The other paper axis becomes U and view depth becomes V
+                // in the window plane. Its normal points toward +U or -V.
+                let section = torus::project(
+                    &side_input,
+                    placement,
+                    radii,
+                    DrawingProjection {
+                        frame: PlaneFrame {
+                            u: axes[1 - axis],
+                            v: axes[2],
+                            ..view
+                        },
+                        section_offset_mm: Some(if axis == 0 { coordinate } else { -coordinate }),
+                        section_u_mm: windows[1 - axis],
+                        section_v_mm: Some([far, near]),
+                        section_only: true,
+                        section_depth_mm: None,
+                        maximum_curves,
+                        maximum_points,
+                        ..self.options
+                    },
+                )?;
+                self.contours.extend(torus_side::contours(
+                    &section,
+                    axis,
+                    coordinate,
+                    near,
+                    tolerance,
+                    owner,
+                    (maximum_curves as usize).min(maximum_points as usize / 2),
+                )?);
+            }
         }
-        Ok(true)
+        Ok(())
     }
 
     fn torus_caps(
@@ -452,7 +537,6 @@ impl Retained {
         let [x, y, center_depth] = torus::axial_center(placement, self.options.frame)?;
         let center = [x, y];
         let [_, minor] = radii;
-        let policy = input.solid.geometry_policy();
         let near_delta = near - center_depth;
         let far_delta = self
             .options
@@ -470,72 +554,53 @@ impl Retained {
         if distances[0].hypot(distances[1]) >= outer {
             return Ok(());
         }
-        if windows.iter().enumerate().any(|(axis, window)| {
-            window.is_some_and(|[lo, hi]| center[axis] - outer < lo || center[axis] + outer > hi)
-        }) {
-            return Err(err(
-                GeometryErrorKind::Unsupported,
-                "Rust mixed axial torus sections require the window to contain the retained torus",
-            ));
-        }
-        self.blockers.extend(
-            AnalyticFace::torus([x, y, center_depth], [0., 0., 1.], radii)
+        let bounds = center.map(|coordinate| [coordinate - outer, coordinate + outer]);
+        let Some(sides) = self.torus_window_sides(bounds) else {
+            return Ok(());
+        };
+        let Some(blocker) =
+            AnalyticFace::retained_torus([x, y, center_depth], [0., 0., 1.], radii, depth)
                 .map_err(planar::projection_error)?
-                .retained(depth),
-        );
+        else {
+            return Ok(());
+        };
+        let face = self.blockers.len();
+        self.blockers.push(blocker);
         if near_delta.abs() < minor {
             let cut_radii = torus::section_radii(radii, near_delta);
-            let rings = cut_radii
-                .into_iter()
-                .map(|radius| {
-                    let ellipse =
-                        SpatialEllipse::new([x, y, near], [0., 0., 1.], [1., 0., 0.], [radius; 2])
-                            .map_err(|_| invalid_cap())?;
-                    Ok(vec![FaceTrim::Arc(
-                        EllipseArc::new(ellipse, 0., TAU).map_err(|_| invalid_cap())?,
-                    )])
-                })
-                .collect::<Result<_, GeometryError>>()?;
-            self.blockers.extend(
-                AnalyticFace::plane(
-                    [x, y, near],
-                    [0., 0., 1.],
-                    rings,
-                    policy.linear_tolerance_mm,
-                )
-                .map_err(planar::projection_error)?,
-            );
             let mut vectors = section::project_concentric(center, cut_radii, &input, self.options)?;
             for vector in &mut vectors {
                 vector.source_index = source;
             }
             self.extend(vectors)?;
         }
-        let mut add_rims = |delta: f64| {
-            self.rims
-                .extend(
-                    torus::section_radii(radii, delta).map(|radius| SpatialRimCandidate {
-                        source,
-                        ellipse: Ellipse {
-                            center,
-                            major: radius,
-                            minor: radius,
-                            u: [1., 0.],
-                            v: [0., 1.],
-                            trim: [0., TAU],
-                        },
-                        depth: center_depth + delta,
-                        depth_sine: 0.,
-                    }),
-                );
+        let mut add_rims = |delta| {
+            for radius in torus::section_radii(radii, delta) {
+                let rim = SpatialRimCandidate {
+                    source,
+                    ellipse: Ellipse {
+                        center,
+                        major: radius,
+                        minor: radius,
+                        u: [1., 0.],
+                        v: [0., 1.],
+                        trim: [0., TAU],
+                    },
+                    depth: center_depth + delta,
+                    depth_sine: 0.,
+                };
+                self.rims
+                    .extend(depth.clip_rim(rim).map_err(planar::projection_error)?);
+            }
+            Ok::<(), GeometryError>(())
         };
         if widest != near_delta {
-            add_rims(widest);
+            add_rims(widest)?;
         }
         if self.options.hidden_lines && far_delta.abs() < minor && far_delta != widest {
-            add_rims(far_delta);
+            add_rims(far_delta)?;
         }
-        Ok(())
+        self.torus_sides(&input, placement, radii, (source, face), sides)
     }
 
     fn near_cut(

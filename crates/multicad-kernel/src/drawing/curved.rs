@@ -202,7 +202,11 @@ fn project_members(
                     shell_faces.len(),
                 )?;
                 contours.extend(visible);
-                intrinsic_hidden.extend(hidden);
+                intrinsic_hidden.extend(
+                    hidden
+                        .into_iter()
+                        .map(planar_projection::HiddenCandidate::Line),
+                );
                 shell_faces.push(
                     planar_projection::AnalyticFace::torus(center, axis, body.radii_mm())
                         .map_err(planar::projection_error)?,
