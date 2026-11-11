@@ -171,11 +171,17 @@ pub(crate) fn validate_rust_family(
 ) -> Result<(), ModelError> {
     if !matches!(
         family,
-        ThreadFamily::IsoMetric | ThreadFamily::Unc | ThreadFamily::Unf | ThreadFamily::Custom
+        ThreadFamily::IsoMetric
+            | ThreadFamily::Unc
+            | ThreadFamily::Unf
+            | ThreadFamily::Trapezoidal
+            | ThreadFamily::Acme
+            | ThreadFamily::Buttress
+            | ThreadFamily::Custom
     ) {
         return Err(error(
             Some(feature),
-            "Rust thread geometry supports ISO metric, sourced UNC/UNF and straight custom profiles",
+            "Rust thread geometry supports ISO metric, sourced UNC/UNF/Trapezoidal/Acme/Buttress and straight custom profiles",
         ));
     }
     Ok(())
@@ -201,16 +207,28 @@ pub(crate) fn rust_profile(
             "Rust thread geometry requires an untapered profile without crest rounding",
         ));
     }
+    let phase = thread
+        .buttress
+        .as_ref()
+        .map_or(0., |buttress| buttress.phase_rotation_rad);
+    let (sin, cos) = phase.sin_cos();
     Ok((
         helical_spec(thread),
         thread
-            .metric_fit
+            .buttress
             .as_ref()
-            .and_then(|fit| fit.external_root_radius_mm),
+            .and_then(|buttress| buttress.root_circle.as_ref())
+            .map(|circle| circle.radius_mm)
+            .or_else(|| {
+                thread
+                    .metric_fit
+                    .as_ref()
+                    .and_then(|fit| fit.external_root_radius_mm)
+            }),
         PlaneFrame {
             origin: thread.frame.origin,
-            u: thread.frame.u,
-            v: thread.frame.v,
+            u: std::array::from_fn(|i| thread.frame.u[i] * cos + thread.frame.v[i] * sin),
+            v: std::array::from_fn(|i| thread.frame.v[i] * cos - thread.frame.u[i] * sin),
         },
     ))
 }
