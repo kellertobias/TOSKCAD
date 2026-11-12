@@ -161,6 +161,7 @@ impl Solid {
             policy: self.policy,
             provenance: vec![],
             rust_origins: vec![],
+            retained_placement: None,
         };
         let Some(stock) = self
             .polygon_prism()

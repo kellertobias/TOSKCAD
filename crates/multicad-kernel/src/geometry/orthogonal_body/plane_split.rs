@@ -107,6 +107,7 @@ impl Solid {
                 policy,
                 provenance: vec![],
                 rust_origins: vec![],
+                retained_placement: None,
             })
         };
         Ok([build(clips[0])?, build(clips[1])?])

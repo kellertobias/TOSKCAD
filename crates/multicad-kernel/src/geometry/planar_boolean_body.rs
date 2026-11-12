@@ -26,6 +26,7 @@ mod intrinsic_query;
 mod loft;
 mod miter_sweep;
 mod scale;
+mod straight_profile;
 
 type Point = [f64; 3];
 type Key = [usize; 2];
@@ -345,6 +346,7 @@ impl Solid {
         policy: GeometryPolicy,
     ) -> Option<Result<Vec<ConvexPart>, GeometryError>> {
         self.simple_concave_parts(topology, policy)
+            .or_else(|| self.hollow_straight_parts(topology, policy))
             .or_else(|| self.imported_convex_parts(topology, policy))
             .or_else(|| self.planar_convex_parts_legacy(topology, policy).map(Ok))
     }
@@ -976,6 +978,7 @@ impl PlanarBooleanBody {
             policy,
             provenance: vec![],
             rust_origins: vec![],
+            retained_placement: None,
         })
     }
 

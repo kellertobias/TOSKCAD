@@ -475,6 +475,7 @@ impl Solid {
             policy,
             provenance: Vec::new(),
             rust_origins: Vec::new(),
+            retained_placement: None,
         })
     }
 

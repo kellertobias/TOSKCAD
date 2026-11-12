@@ -196,6 +196,7 @@ impl Solid {
             policy,
             provenance: vec![],
             rust_origins,
+            retained_placement: None,
         };
         result
             .topology_snapshot(feature, 0)?

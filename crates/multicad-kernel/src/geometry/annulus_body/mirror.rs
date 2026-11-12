@@ -147,6 +147,7 @@ impl Solid {
                 policy,
                 provenance: vec![],
                 rust_origins: self.rust_origins.clone(),
+                retained_placement: None,
             };
             result.circular_mirror_bounds(policy)?;
             Ok(result)
@@ -202,6 +203,7 @@ impl Solid {
                 policy,
                 provenance: vec![],
                 rust_origins: self.rust_origins.clone(),
+                retained_placement: None,
             };
             result.circular_mirror_bounds(policy)?;
             Ok(result)

@@ -14,8 +14,8 @@ use multicad_core::{
     sketch::{Frame, Geometry},
 };
 use multicad_kernel::{
-    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, RigidTransform,
-    Solid,
+    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryErrorKind, GeometryPolicy, PlaneFrame,
+    RigidTransform, Solid,
 };
 use multicad_solver::SketchEvaluationContext;
 use std::collections::BTreeMap;
@@ -319,13 +319,12 @@ fn cut_plane(
             role: format!("{role}.side.{i}"),
         })
         .collect();
-    let tool = Solid::extrude_curved_profile_vector_named(
-        &profile,
-        normal.map(|n| -n * size),
-        owner,
-        &origins,
-        policy,
-    )
+    let displacement = normal.map(|n| -n * size);
+    let tool = if solid.uses_rust_geometry() {
+        Solid::rust_extrude_linear_named(&profile, displacement, 0., owner, &origins, policy)
+    } else {
+        Solid::extrude_curved_profile_vector_named(&profile, displacement, owner, &origins, policy)
+    }
     .map_err(|e| error(Some(owner), e))?;
     solid
         .boolean(&tool, BooleanOperation::Subtract, policy)
@@ -397,15 +396,95 @@ fn rust_member(
             |(_, plane)| plane,
         )
     });
-    Solid::rust_extrude_between_planes_named(
+    let trimmed = Solid::rust_extrude_between_planes_named(
         &profile,
         member.frame.axis,
         planes,
         id,
         &origins,
         policy,
+    );
+    match trimmed {
+        Ok(solid) => Ok(solid),
+        Err(cause) if cause.kind == GeometryErrorKind::Input => {
+            // A short member can lose part of its section after the first
+            // miter. A generator-preserving sweep cannot represent that
+            // intermediate shape; clip the actual extended stock instead.
+            rust_plane_clipped_member(member, joints, id, policy)
+        }
+        Err(cause) => Err(error(Some(connection), cause)),
+    }
+}
+
+fn cut_stock_extent(member: &ResolvedMember, joints: &[Joint]) -> (f64, f64, f64) {
+    let mut from = member.start_offset_mm();
+    let mut to = from + member.length_mm();
+    let mut size = member.length_mm() + diagonal(member);
+    for joint in joints {
+        let sin = (joint.resolved.angle_deg.to_radians().sin()).max(0.25);
+        let margin = 2. * (diagonal(member) + diagonal(&joint.partner_member)) / sin
+            + joint.resolved.gap_mm
+            + 1.;
+        match joint.treatment.end {
+            MemberEnd::Start => from = from.min(-margin),
+            MemberEnd::End => to = to.max(member.path_length_mm + margin),
+        }
+        size = size.max(joint.partner_member.length_mm() + 4. * margin);
+    }
+    (from, to, 2. * size + 100.)
+}
+
+fn rust_plane_clipped_member(
+    member: &ResolvedMember,
+    joints: &[Joint],
+    id: EntityId,
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
+    let (from, to, size) = cut_stock_extent(member, joints);
+    let profile = section_profile(member, from, None);
+    let mut solid = Solid::rust_extrude_linear_named(
+        &profile,
+        member.frame.axis.map(|a| a * (to - from)),
+        0.,
+        id,
+        &origins(id, member, &profile, "member"),
+        policy,
     )
-    .map_err(|cause| error(Some(connection), cause))
+    .map_err(|cause| error(Some(id), cause))?;
+    for joint in joints {
+        let EndCut::Plane { point, normal } = joint.treatment.cut else {
+            return Err(error(
+                Some(joint.connection),
+                "Expected a planar member end",
+            ));
+        };
+        solid = cut_plane(
+            solid,
+            point,
+            normal,
+            size,
+            id,
+            &format!("connection.{}", joint.connection),
+            policy,
+        )?
+        .ok_or_else(|| {
+            error(
+                Some(joint.connection),
+                "The connection cut removes the whole member",
+            )
+        })?;
+    }
+    if solid
+        .solid_count()
+        .map_err(|cause| error(Some(id), cause))?
+        != 1
+    {
+        return Err(error(
+            Some(id),
+            "Connection cuts split the member into separate pieces; check the joint geometry",
+        ));
+    }
+    Ok(solid)
 }
 
 /// Build a member solid with its connection end cuts; returns it with its
@@ -432,22 +511,8 @@ pub(crate) fn build(
         return Ok((rust_member(&member, &joints, id, policy)?, member));
     }
     // Connected ends start long enough to be cut back to their joint.
-    let mut from = member.start_offset_mm();
-    let mut to = from + member.length_mm();
-    let mut size = member.length_mm() + diagonal(&member);
-    for joint in &joints {
-        let sin = (joint.resolved.angle_deg.to_radians().sin()).max(0.25);
-        let margin = 2. * (diagonal(&member) + diagonal(&joint.partner_member)) / sin
-            + joint.resolved.gap_mm
-            + 1.;
-        match joint.treatment.end {
-            model::MemberEnd::Start => from = from.min(-margin),
-            model::MemberEnd::End => to = to.max(member.path_length_mm + margin),
-        }
-        size = size.max(joint.partner_member.length_mm() + 4. * margin);
-    }
+    let (from, to, size) = cut_stock_extent(&member, &joints);
     let mut solid = prism(&member, from, to - from, None, id, "member", policy)?;
-    let size = 2. * size + 100.;
     for joint in &joints {
         let role = format!("connection.{}", joint.connection);
         let removed = || {

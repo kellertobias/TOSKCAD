@@ -9,7 +9,7 @@ use multicad_rust_kernel::{
     Circle, Rational, cylinder::AxialCylinder, polygon::PolygonPrism, prism::Prism,
 };
 use std::path::Path;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 mod annulus_body;
 mod axial_stack_body;
 mod bevel_body;
@@ -615,6 +615,55 @@ pub struct Solid {
     policy: GeometryPolicy,
     pub(crate) provenance: Vec<multicad_core::references::TopologyElement>,
     pub(crate) rust_origins: Vec<Origin>,
+    // The last authored placement retains its original operands. A shared
+    // placement can then be factored without inverting rounded world points.
+    retained_placement: Option<Rc<RetainedPlacement>>,
+}
+
+struct RetainedPlacement {
+    source: Solid,
+    transform: RigidTransform,
+    geometry: RetainedGeometryKey,
+}
+
+struct RetainedGeometryKey {
+    body: Weak<dyn std::any::Any>,
+    frame: PlaneFrame,
+}
+
+impl Solid {
+    fn retained_geometry_key(&self) -> Option<RetainedGeometryKey> {
+        fn key<T: std::any::Any>(body: &Rc<T>, frame: PlaneFrame) -> RetainedGeometryKey {
+            let body: Weak<T> = Rc::downgrade(body);
+            RetainedGeometryKey { body, frame }
+        }
+        Some(match &self.body {
+            SolidBody::Prism(body, frame) => key(body, *frame),
+            SolidBody::PolygonPrism(body) => key(body, body.frame),
+            SolidBody::Linear(body, frame) => key(body, *frame),
+            SolidBody::Orthogonal(body, frame) => key(body, *frame),
+            SolidBody::PlanarBoolean(body, frame) => key(body, *frame),
+            _ => return None,
+        })
+    }
+
+    fn current_retained_placement(&self) -> Option<&RetainedPlacement> {
+        let retained = self.retained_placement.as_deref()?;
+        let actual = self.retained_geometry_key()?;
+        // Weak ownership prevents allocation-address reuse. Copy-on-write
+        // geometry edits, chart changes and metadata edits invalidate reuse.
+        if !actual.body.ptr_eq(&retained.geometry.body)
+            || actual.frame != retained.geometry.frame
+            || self.rust_origins != retained.source.rust_origins
+            || self.provenance
+                != retained
+                    .source
+                    .transformed_author_metadata(retained.transform)
+        {
+            return None;
+        }
+        Some(retained)
+    }
 }
 
 enum SolidBody {
@@ -750,6 +799,7 @@ impl Solid {
             policy,
             provenance: vec![],
             rust_origins: vec![],
+            retained_placement: None,
         })
     }
 
@@ -802,6 +852,7 @@ impl Solid {
             policy,
             provenance: vec![],
             rust_origins: vec![],
+            retained_placement: None,
         };
         let bounds = solid.bounds()?;
         policy.point(bounds.min)?;
@@ -894,6 +945,7 @@ impl Solid {
             policy,
             provenance: vec![],
             rust_origins: vec![],
+            retained_placement: None,
         };
         let bounds = solid.bounds()?;
         policy.point(bounds.min)?;
@@ -1129,6 +1181,7 @@ impl Solid {
             policy: self.policy,
             provenance: self.provenance.clone(),
             rust_origins: self.rust_origins.clone(),
+            retained_placement: self.retained_placement.clone(),
         })
     }
     pub(crate) fn adopt(
@@ -1148,6 +1201,7 @@ impl Solid {
             policy,
             provenance: vec![],
             rust_origins: vec![],
+            retained_placement: None,
         };
         if !ffi::valid(solid.occt()?).map_err(|e| native(operation, e))?
             || solid.solid_count()? == 0
@@ -1517,15 +1571,26 @@ impl Solid {
                 }
                 SolidBody::Occt(_) => unreachable!("checked Rust body"),
             };
-            let result = Self {
+            let mut result = Self {
                 body,
                 policy: self.policy,
                 provenance: self.transformed_author_metadata(transform),
                 rust_origins: self.rust_origins.clone(),
+                retained_placement: None,
             };
             let bounds = result.bounds()?;
             self.policy.point(bounds.min)?;
             self.policy.point(bounds.max)?;
+            if let Some(geometry) = result.retained_geometry_key() {
+                let mut source = self.share()?;
+                // Keep only the most recent placement, not a recursive history.
+                source.retained_placement = None;
+                result.retained_placement = Some(Rc::new(RetainedPlacement {
+                    source,
+                    transform,
+                    geometry,
+                }));
+            }
             return Ok(result);
         }
         let r: Vec<_> = transform.rotation.into_iter().flatten().collect();

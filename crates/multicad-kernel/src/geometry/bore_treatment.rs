@@ -108,6 +108,7 @@ impl Solid {
             policy,
             provenance: vec![],
             rust_origins: self.rust_origins.clone(),
+            retained_placement: None,
         })
     }
 }

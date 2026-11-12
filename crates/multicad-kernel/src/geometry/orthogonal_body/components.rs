@@ -55,6 +55,7 @@ impl Solid {
                 policy: self.policy,
                 provenance: self.provenance.clone(),
                 rust_origins: self.rust_origins.clone(),
+                retained_placement: None,
             };
             let mut sources = Sources::default();
             source
@@ -77,6 +78,7 @@ impl Solid {
                     policy: self.policy,
                     provenance: vec![],
                     rust_origins: vec![],
+                    retained_placement: None,
                 };
                 // Extraction copies existing boundary; it does not author
                 // new feature identities. Do not publish builder fallback

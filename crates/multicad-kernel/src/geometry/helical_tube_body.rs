@@ -139,6 +139,7 @@ impl Solid {
             policy,
             provenance: self.provenance.clone(),
             rust_origins: self.rust_origins.clone(),
+            retained_placement: None,
         };
         result
             .topology_snapshot(feature, 0)?

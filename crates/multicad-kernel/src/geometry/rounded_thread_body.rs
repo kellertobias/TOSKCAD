@@ -124,6 +124,7 @@ impl Solid {
             policy,
             provenance: vec![],
             rust_origins: vec![],
+            retained_placement: None,
         })
     }
     pub(crate) fn rounded_thread_body(&self) -> Option<(&RoundedThreadBody, PlaneFrame)> {

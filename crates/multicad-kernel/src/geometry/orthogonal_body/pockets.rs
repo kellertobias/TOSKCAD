@@ -100,6 +100,7 @@ impl Solid {
             policy: self.policy,
             provenance: vec![],
             rust_origins: self.rust_origins.clone(),
+            retained_placement: None,
         };
         let Some(result) =
             uncut.rust_subtract_orthogonal_tools(std::slice::from_ref(tool), policy)?

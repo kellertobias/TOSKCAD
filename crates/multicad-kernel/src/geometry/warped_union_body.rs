@@ -597,6 +597,7 @@ impl Solid {
             policy,
             provenance: vec![],
             rust_origins: vec![],
+            retained_placement: None,
         };
         let bounds = result.bounds()?;
         policy.point(bounds.min)?;
@@ -675,6 +676,7 @@ impl WarpedUnionBody {
             policy,
             provenance: vec![],
             rust_origins: vec![],
+            retained_placement: None,
         })
     }
 

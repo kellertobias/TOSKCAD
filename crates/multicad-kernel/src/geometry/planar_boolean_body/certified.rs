@@ -22,7 +22,7 @@ impl Solid {
         policy: GeometryPolicy,
     ) -> Option<Result<Option<Self>, GeometryError>> {
         let certified =
-            self.has_certified_planar_material() || other.has_certified_planar_material();
+            self.selects_general_planar_material() || other.selects_general_planar_material();
         if !certified
             && (operation != BooleanOperation::Intersect
                 || [self, other]
@@ -40,6 +40,14 @@ impl Solid {
     pub(super) fn has_certified_planar_material(&self) -> bool {
         self.planar_boolean_body()
             .is_some_and(|(body, _)| matches!(body.material, Some(Material::Certified(_))))
+    }
+
+    fn selects_general_planar_material(&self) -> bool {
+        self.has_certified_planar_material()
+            || self
+                .linear_body()
+                .and_then(|(body, _)| body.straight_section())
+                .is_some_and(|(rings, _)| rings.len() > 1)
     }
 
     /// A selected provider returns exact empty material as `Ok(None)`. The outer
@@ -62,21 +70,34 @@ impl Solid {
         if operation != BooleanOperation::Intersect
             && !solids
                 .iter()
-                .any(|solid| solid.has_certified_planar_material())
+                .any(|solid| solid.selects_general_planar_material())
         {
             return None;
         }
         // The existing exact rectilinear path is cheaper for ordinary boxes.
         if !solids
             .iter()
-            .any(|solid| solid.has_certified_planar_material())
+            .any(|solid| solid.selects_general_planar_material())
             && solids
                 .iter()
                 .all(|solid| solid.orthogonal_cells().is_ok_and(|cells| cells.is_some()))
         {
             return None;
         }
-        let result = certified_boolean(solids, operation, feature, policy, interrupt);
+        let result = if let Some((sources, placement)) = common_placement(solids) {
+            (|| {
+                for source in &sources {
+                    placement
+                        .frame(PlaneFrame::default())
+                        .checked_metric_bounds(source.bounds()?, policy)?;
+                }
+                certified_boolean(&sources, operation, feature, policy, interrupt)?
+                    .map(|solid| solid.transformed(placement))
+                    .transpose()
+            })()
+        } else {
+            certified_boolean(solids, operation, feature, policy, interrupt)
+        };
         if result
             .as_ref()
             .is_err_and(|error| error.kind == GeometryErrorKind::Unsupported)
@@ -86,6 +107,18 @@ impl Solid {
             Some(result)
         }
     }
+}
+
+fn common_placement<'a>(solids: &[&'a Solid]) -> Option<(Vec<&'a Solid>, RigidTransform)> {
+    let retained = solids
+        .iter()
+        .map(|solid| solid.current_retained_placement())
+        .collect::<Option<Vec<_>>>()?;
+    let placement = retained.first()?.transform;
+    if placement == RigidTransform::default() || retained.iter().any(|p| p.transform != placement) {
+        return None;
+    }
+    Some((retained.iter().map(|p| &p.source).collect(), placement))
 }
 
 fn certified_boolean(
@@ -280,6 +313,65 @@ fn face_indices(
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn retained_placement_reuse_requires_current_geometry_chart_and_metadata() {
+        let policy = GeometryPolicy::default();
+        let stock = Solid::rust_box(
+            EntityId::new().uuid_bits(),
+            [10, 8, 6].map(|n| Rational::new(n, 1).unwrap()),
+            PlaneFrame::default(),
+            policy,
+        )
+        .unwrap();
+        let pose = RigidTransform {
+            rotation: [[0.8, 0., 0.6], [0., 1., 0.], [-0.6, 0., 0.8]],
+            translation_mm: [90., -40., 23.],
+        };
+        let moved = stock.transformed(pose).unwrap();
+        assert!(moved.current_retained_placement().is_some());
+        let shared = moved.share().unwrap();
+        assert!(shared.current_retained_placement().is_some());
+        assert!(common_placement(&[&moved, &shared]).is_some());
+        assert!(common_placement(&[&stock, &shared]).is_none());
+        let different = stock
+            .transformed(RigidTransform {
+                translation_mm: [91., -40., 23.],
+                ..pose
+            })
+            .unwrap();
+        assert!(common_placement(&[&moved, &different]).is_none());
+        let mut replaced = moved.share().unwrap();
+        let replacement = Solid::rust_box(
+            EntityId::new().uuid_bits(),
+            [2, 3, 4].map(|n| Rational::new(n, 1).unwrap()),
+            PlaneFrame::default(),
+            policy,
+        )
+        .unwrap()
+        .transformed(pose)
+        .unwrap();
+        replaced.body = replacement.body;
+        assert!(replaced.current_retained_placement().is_none());
+        let (local, _) = moved.local_box_treatment_source().unwrap().unwrap();
+        assert!(local.current_retained_placement().is_none());
+        let tagged = shared
+            .with_component_origin(EntityId::new(), EntityId::new())
+            .unwrap();
+        assert!(tagged.current_retained_placement().is_none());
+        assert!(moved.current_retained_placement().is_some());
+        // A second placement retains its immediate source without growing a
+        // recursive chain. Sharing never changes either source's geometry.
+        let twice = moved.transformed(pose).unwrap();
+        let retained = twice.current_retained_placement().unwrap();
+        assert!(retained.source.retained_placement.is_none());
+        near_volume(&retained.source, 480.);
+        near_volume(&moved, 480.);
+    }
+
+    fn near_volume(solid: &Solid, expected: f64) {
+        assert!((solid.volume_mm3().unwrap() - expected).abs() < 1e-7);
+    }
 
     #[test]
     fn cancelled_cold_cut_recovery_is_retryable_in_local_and_posed_source_charts() {

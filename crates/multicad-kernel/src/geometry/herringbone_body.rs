@@ -129,6 +129,7 @@ impl Solid {
             policy,
             provenance: vec![],
             rust_origins: vec![],
+            retained_placement: None,
         })
     }
 
