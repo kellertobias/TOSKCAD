@@ -81,6 +81,12 @@ fn bounded_arithmetic_and_ambiguous_contacts_refuse_then_recover() {
     assert_eq!(measure(&a, &a, [1e8, 0., 0.], false), Err(Error::Limit));
     let large = cylinder(q(100_000_000, 1), q(2, 1));
     assert_eq!(measure(&large, &a, [0.; 3], false), Err(Error::Limit));
+    let barely_large = cylinder(q(1, 1), q(100_000_000_000_000_001, 10_000_000_000));
+    assert_eq!(barely_large.height().as_f64(), 1e7);
+    assert_eq!(
+        measure(&a, &barely_large, [0.; 3], false),
+        Err(Error::Limit)
+    );
     let x = 2_f64.sqrt();
     assert_eq!(measure(&a, &a, [x, x, 0.], false), Err(Error::Unresolved));
     let outer = cylinder(q(3, 1), q(2, 1));

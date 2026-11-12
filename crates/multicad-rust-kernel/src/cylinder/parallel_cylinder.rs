@@ -198,7 +198,10 @@ pub fn measure(
         a.height(),
         b.height(),
     ];
-    if offset.into_iter().any(|v| v.abs() > 1e7) || dimensions.into_iter().any(|v| v.as_f64() > 1e7)
+    if offset.into_iter().any(|v| v.abs() > 1e7)
+        || dimensions
+            .into_iter()
+            .any(|v| v > Rational::new(10_000_000, 1).expect("query coordinate bound"))
     {
         return Err(Error::Limit);
     }
