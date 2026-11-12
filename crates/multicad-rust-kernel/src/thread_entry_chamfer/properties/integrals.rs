@@ -155,7 +155,7 @@ impl Axial {
     fn new(
         q: Jet,
         rate: I,
-        start: f64,
+        start: I,
         lo: Jet,
         hi: Jet,
         radius: Jet,
@@ -163,7 +163,7 @@ impl Axial {
     ) -> Result<Self, Error> {
         let mid = (lo + hi).scale(I::point(0.5));
         let d = (hi - lo).scale(I::point(0.5));
-        let phase = (mid - q - c(start)).scale(I::point(1.) / rate);
+        let phase = (mid - q - Jet::constant(start)).scale(I::point(1.) / rate);
         let beta = d.scale(I::point(1.) / rate.abs());
         // β uses |rate|; sine moments carry the actual signed phase rate.
         let mut harmonics = [fourier(beta)?, fourier(beta.scale(I::point(2.)))?];
@@ -225,7 +225,7 @@ impl Source<'_> {
         let (r, rp, offset) = profile(body, self.segment.band, q)?;
         let rate = body.rate_interval()?;
         let inverse = I::point(1.) / rate.abs();
-        let start = f64::from(self.start) * body.tool.spec().pitch_mm;
+        let start = I::point(f64::from(self.start)) * I::point(body.tool.spec().pitch_mm);
         let mut out = [c(0.); COUNT];
         if matches!(self.kind, Kind::Entry | Kind::End) {
             let z = if self.kind == Kind::Entry {
@@ -238,7 +238,7 @@ impl Source<'_> {
             } else {
                 r
             };
-            let angle = (c(z) - q - c(start)).scale(I::point(1.) / rate);
+            let angle = (c(z) - q - Jet::constant(start)).scale(I::point(1.) / rate);
             let [sin, cos] = angle.sin_cos()?;
             out[10] = pow(rho, 2).scale(inverse / I::point(2.));
             out[11] = (pow(rho, 3) * cos).scale(inverse / I::point(3.));

@@ -589,3 +589,30 @@ fn derived_property_widths_are_certified_after_division_and_centering() {
         Err(Error::Unresolved)
     );
 }
+#[test]
+fn nonbinary_pitch_start_offsets_remain_enclosed_and_preserve_physical_symmetry() {
+    let rounded = 3_f64 * 0.7;
+    assert_ne!(3_f64.mul_add(0.7, -rounded), 0.);
+    let enclosed = I::point(3.) * I::point(0.7);
+    assert!(enclosed.lo < rounded && rounded < enclosed.hi);
+    for (left, starts) in [(false, 4), (true, 8)] {
+        let mut spec = super::super::tests::tool(left, starts, false).spec();
+        spec.pitch_mm *= 0.7;
+        spec.length_mm *= 0.7;
+        spec.depth_mm *= 0.7;
+        spec.crest_width_mm *= 0.7;
+        let body = Chamfer::new(Thread::new(spec).unwrap(), 0.3, None).unwrap();
+        let p = body.properties(PropertiesOptions::default()).unwrap();
+        for i in 0..2 {
+            assert!(includes(p.centroid_mm[i], 0., 1e-13));
+            assert!(includes(p.second_moments_mm5[i][2], 0., 1e-12));
+        }
+        assert!(includes(p.second_moments_mm5[0][1], 0., 1e-12));
+        assert!(
+            p.second_moments_mm5[0][0].lower <= p.second_moments_mm5[1][1].upper
+                && p.second_moments_mm5[1][1].lower <= p.second_moments_mm5[0][0].upper
+        );
+        let v = body.volume_mm3(QueryOptions::default()).unwrap();
+        assert!(p.volume_mm3.lower <= v.upper && v.lower <= p.volume_mm3.upper);
+    }
+}
