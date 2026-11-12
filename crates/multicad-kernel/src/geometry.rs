@@ -2596,9 +2596,9 @@ impl Solid {
             SolidBody::NormalRelief(body, frame) => body.append_step(writer, *frame),
             SolidBody::PolygonPrism(placed) => {
                 if let Some(treatments) = &placed.bore_treatments {
-                    writer.append_chamfered_polygon_prism(
+                    writer.append_treated_polygon_prism(
                         &placed.prism,
-                        treatments.geometry.chamfers(),
+                        &treatments.geometry,
                         placed.frame.origin,
                         placed.frame.u,
                         placed.frame.v,

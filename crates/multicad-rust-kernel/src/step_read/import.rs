@@ -16,6 +16,7 @@ use std::cmp::Ordering;
 mod axial_profile_stack;
 mod chamfered;
 use chamfered::{Bore, canonical_bores};
+mod counterbored;
 mod cylindrical_revolution;
 #[path = "helical_cut.rs"]
 pub(super) mod helical_cut;
@@ -88,6 +89,13 @@ pub enum ImportProfile {
         rings: Vec<Vec<[f64; 2]>>,
         circular_holes: Vec<([f64; 2], f64)>,
         chamfers: Vec<BoreChamfer>,
+    },
+    CounterboredPolygon {
+        rings: Vec<Vec<[f64; 2]>>,
+        circular_holes: Vec<([f64; 2], f64)>,
+        counterbores: Vec<crate::chamfered_bores::Counterbore>,
+        /// Complete finite keys derived from validated source faces, in reconstructed face order.
+        source_faces: Vec<Vec<u8>>,
     },
     LinearSweep {
         /// Counterclockwise exterior and clockwise holes, paired with `top`.
@@ -293,6 +301,7 @@ pub(super) fn recognize_member(
     }
     let solid = match shell
         .recognize(faces)
+        .or_else(|| shell.counterbored_polygon(faces))
         .or_else(|| shell.pocketed_polygon(faces))
         .or_else(|| shell.pierced_normal_sweep(faces))
         .or_else(|| shell.cylindrical_revolution(faces, &readback))
@@ -350,6 +359,7 @@ struct Wall {
 enum PlanarMatch<'a> {
     Straight(f64, &'a [PocketRim]),
     Chamfered(f64, &'a [Bore]),
+    Counterbored(f64, &'a [counterbored::Bore], &'a [Vec<u8>], [usize; 2]),
     Ruled(f64, &'a BTreeMap<u32, u32>),
     Trimmed {
         direction: Point,
@@ -878,6 +888,20 @@ impl Shell<'_, '_> {
                         rings: rings.map(|(ring, _)| ring).collect(),
                         circular_holes,
                         chamfers,
+                    },
+                )
+            }
+            PlanarMatch::Counterbored(height_mm, bores, keys, caps) => {
+                let rings: Vec<_> = rings.map(|(ring, _)| ring).collect();
+                let (circular_holes, counterbores, source_faces) =
+                    self.counterbore_profile(&rings, bores, project, lower, edges, keys, caps)?;
+                (
+                    height_mm,
+                    ImportProfile::CounterboredPolygon {
+                        rings,
+                        circular_holes,
+                        counterbores,
+                        source_faces,
                     },
                 )
             }

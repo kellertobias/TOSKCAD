@@ -18,6 +18,7 @@ use multicad_rust_kernel::{
     polygon::PolygonPrism,
     prism::Prism,
 };
+use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::rc::Rc;
 
@@ -522,7 +523,9 @@ impl PlacedPolygon {
                     let [x, y] = stack.center_mm;
                     let face = Face {
                         index,
-                        plane: None,
+                        plane: self
+                            .bore_shoulder(stack, a, b)
+                            .map(|p| (p.origin_mm, p.normal())),
                         center_mm: self.position([x, y, z]),
                         area_mm2: PI * (r + s) * slant,
                     };
@@ -536,6 +539,73 @@ impl PlacedPolygon {
             faces[base_faces..].sort_unstable_by_key(|face| face.index);
         }
         faces
+    }
+
+    fn bore_shoulder(
+        &self,
+        stack: &BoreStack,
+        a: BoreLayer,
+        b: BoreLayer,
+    ) -> Option<ReferenceFrame> {
+        (a.z_mm == b.z_mm).then(|| {
+            let up = (b.radius_mm > a.radius_mm) != self.reverse_sweep;
+            let [x, y] = stack.center_mm;
+            frame(
+                self.position([x, y, a.z_mm]),
+                self.frame.u,
+                self.frame.v.map(|v| if up { v } else { -v }),
+            )
+        })
+    }
+
+    fn bore_extra_origins(&self) -> Vec<Vec<Origin>> {
+        let Some(t) = &self.bore_treatments else {
+            return Vec::new();
+        };
+        let mut extras = BTreeMap::new();
+        let base = self.edges.len() + 2;
+        let first = self.edges.len() - self.prism.circular_holes().len();
+        for (hole, stack) in t.geometry.stacks().iter().enumerate() {
+            let original = stack
+                .face_indices
+                .iter()
+                .position(|&i| (i as usize) < base)
+                .expect("original cylinder");
+            for (i, &index) in stack.face_indices.iter().enumerate() {
+                if (index as usize) < base {
+                    continue;
+                }
+                let end = i > original;
+                let origin = &t.origins[&(hole, end)];
+                let role = if t.geometry.counterbores().is_empty() {
+                    if end {
+                        "bore.chamfer.end"
+                    } else {
+                        "bore.chamfer.start"
+                    }
+                    .to_string()
+                } else {
+                    let shoulder = stack.layers[i].z_mm == stack.layers[i + 1].z_mm;
+                    format!(
+                        "bore.counterbore.{}.{}",
+                        if end { "end" } else { "start" },
+                        if shoulder { "shoulder" } else { "wall" }
+                    )
+                };
+                extras.insert(
+                    index,
+                    vec![
+                        Origin {
+                            source: origin.source,
+                            role,
+                        },
+                        origin.clone(),
+                        self.edges[first + hole].0.clone(),
+                    ],
+                );
+            }
+        }
+        extras.into_values().collect()
     }
 
     fn bore_crease(&self, center: [f64; 2], z: f64, radius_mm: f64) -> AnalyticGeometry {
@@ -587,26 +657,13 @@ impl PlacedPolygon {
                     ]
                 })
             }))
-            .chain(self.bore_treatments.iter().flat_map(|treatments| {
-                treatments.origins.iter().map(|(&(hole, end), origin)| {
-                    let circle_index = count - self.prism.circular_holes().len() + hole;
-                    let curve = &self.edges[circle_index].0;
-                    vec![
-                        Origin {
-                            source: origin.source,
-                            role: if end {
-                                "bore.chamfer.end"
-                            } else {
-                                "bore.chamfer.start"
-                            }
-                            .into(),
-                        },
-                        origin.clone(),
-                        curve.clone(),
-                    ]
-                })
-            }))
-            .collect();
+            .chain(self.bore_extra_origins())
+            .collect::<Vec<_>>();
+        let face_origins = self
+            .bore_treatments
+            .as_ref()
+            .and_then(|t| t.opaque_origins.clone())
+            .unwrap_or(face_origins);
         let mut build = Builder {
             face_origins,
             elements: vec![],
@@ -694,8 +751,9 @@ impl PlacedPolygon {
                     .chain(stack.face_indices.iter().map(|&face| face as usize))
                     .chain(std::iter::once(1))
                     .collect::<Vec<_>>();
-                for group in faces.windows(3) {
-                    build.face(group[1], None, None, [group[0], group[2]]);
+                for (i, group) in faces.windows(3).enumerate() {
+                    let support = self.bore_shoulder(stack, stack.layers[i], stack.layers[i + 1]);
+                    build.face(group[1], support, support, [group[0], group[2]]);
                 }
                 for (pair, layer) in stack.face_indices.windows(2).zip(&stack.layers[1..]) {
                     build.non_face(
@@ -741,6 +799,24 @@ impl PlacedPolygon {
         let base_faces = self.edges.len() + 2;
         let base_edges = (self.edges.len() * 3 - self.prism.circular_holes().len()) as u32;
         let face_index = face as usize;
+        if let Some(treatments) = &self.bore_treatments {
+            let mut offset = base_edges;
+            for stack in treatments.geometry.stacks() {
+                for (i, &index) in stack.face_indices.iter().enumerate() {
+                    let [a, b] = [stack.layers[i], stack.layers[i + 1]];
+                    if index == face && a.z_mm == b.z_mm {
+                        let edges = [offset + i as u32 - 1, offset + i as u32];
+                        let [outer, inner] = if a.radius_mm > b.radius_mm {
+                            edges
+                        } else {
+                            [edges[1], edges[0]]
+                        };
+                        return vec![vec![(outer, false)], vec![(inner, true)]];
+                    }
+                }
+                offset += (stack.layers.len() - 2) as u32;
+            }
+        }
         if face_index >= base_faces {
             let pocket_face = face_index - base_faces;
             return vec![vec![(base_edges + pocket_face as u32, false)]];

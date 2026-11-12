@@ -611,6 +611,39 @@ impl Solid {
                     .collect();
                 stock.with_polygon_bore_treatments(&chamfers, origins, policy)
             }
+            ImportProfile::CounterboredPolygon {
+                rings,
+                circular_holes,
+                counterbores,
+                source_faces,
+            } => {
+                let stock = Self::from_imported_polygon(
+                    &rings,
+                    &circular_holes,
+                    height_mm,
+                    frame,
+                    feature,
+                    policy,
+                    false,
+                )?;
+                let origins = counterbores
+                    .iter()
+                    .map(|cut| {
+                        let (center, radius) = circular_holes[cut.hole];
+                        feature_origin(
+                            feature,
+                            "counterbore",
+                            frame.point(center).into_iter().chain([
+                                radius,
+                                cut.radius_mm,
+                                cut.depth_mm,
+                                f64::from(cut.end),
+                            ]),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                stock.with_polygon_counterbores(&counterbores, &origins, policy, Some(source_faces))
+            }
             ImportProfile::PocketedPolygon {
                 rings,
                 circular_holes,
