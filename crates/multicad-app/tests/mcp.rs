@@ -146,12 +146,25 @@ mod washer_connection_fixture;
 
 #[test]
 fn default_app_creates_edits_exports_and_reopens_real_washer_connections_atomically() {
+    washer_connection_workflow(false);
+}
+#[test]
+fn default_app_counterbored_connections_preserve_seats_through_edits_history_and_reopen() {
+    washer_connection_workflow(true);
+}
+fn washer_connection_workflow(seated: bool) {
     use multicad_core::{
         document::EntityId,
         model::*,
         project_file::{self, ProjectFile},
     };
     let (document, mut request, _) = washer_connection_fixture::fixture();
+    if seated {
+        request.receivers[0].source.seat = Some(ConnectionReceiverSeat::Counterbore {
+            diameter: multicad_core::model::length(7.),
+            depth: multicad_core::model::length(1.),
+        });
+    }
     for role in [
         ScrewConnectionHardwareRole::HeadWasher,
         ScrewConnectionHardwareRole::NutWasher,
@@ -241,7 +254,11 @@ fn default_app_creates_edits_exports_and_reopens_real_washer_connections_atomica
         json!({"expected_revision":revision,"request":invalid}),
     );
     assert!(
-        failed.to_string().to_lowercase().contains("bearing"),
+        failed.to_string().to_lowercase().contains(if seated {
+            "counterbore wall"
+        } else {
+            "bearing"
+        }),
         "{failed}"
     );
     assert_eq!(client.revision(), revision);
@@ -299,6 +316,13 @@ fn default_app_creates_edits_exports_and_reopens_real_washer_connections_atomica
         close(
             receipt["readback_volume_mm3"].as_f64().unwrap(),
             PI * (9. - 1.7_f64.powi(2)) * height,
+        );
+    }
+    if seated {
+        let exported=client.ok("export_step",json!({"part":request.receivers[0].source.output.body,"file_name":"counterbored-stock.step"}));
+        close(
+            exported["readback_volume_mm3"].as_f64().unwrap(),
+            1640. - PI * (1.7_f64.powi(2) * 4.1 + 3.5_f64.powi(2) - 1.7_f64.powi(2)),
         );
     }
     let revision = client.revision();
