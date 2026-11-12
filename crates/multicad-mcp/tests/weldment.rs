@@ -36,6 +36,142 @@ fn near(v: &Value, expected: f64) {
 }
 
 #[test]
+fn rust_mcp_copes_rectangular_stock_and_preserves_edit_history() {
+    let host = Headless::with_geometry_backend(
+        Workspace::new(Document::new("Coped frame").unwrap()).unwrap(),
+        None,
+        false,
+        multicad_model::GeometryBackend::Rust,
+    );
+    let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
+    let beam_stock = run(
+        "create_profile_stock",
+        json!({
+            "expected_revision":0,"name":"Beam stock","material_name":"S235",
+            "shape":"rectangular","width_mm":60,"height_mm":40,"wall_mm":3,
+        }),
+    )
+    .unwrap();
+    let stud_stock = run(
+        "create_profile_stock",
+        json!({
+            "expected_revision":1,"name":"Stud stock","material":beam_stock["material"],
+            "shape":"rectangular","width_mm":40,"height_mm":40,"wall_mm":2,
+        }),
+    )
+    .unwrap();
+    let beam = run(
+        "create_members",
+        json!({
+            "expected_revision":2,"stock":beam_stock["stock"],
+            "segments":[{"name":"Beam","start_mm":[0,0,0],"end_mm":[1000,0,0]}],
+        }),
+    )
+    .unwrap()["parts"][0]["part"]
+        .clone();
+    let stud = run(
+        "create_members",
+        json!({
+            "expected_revision":3,"stock":stud_stock["stock"],
+            "segments":[{"name":"Stud","start_mm":[500,0,0],"end_mm":[500,500,0]}],
+        }),
+    )
+    .unwrap()["parts"][0]["part"]
+        .clone();
+    let joint = run(
+        "connect_members",
+        json!({
+            "expected_revision":4,"name":"Stud cope","kind":"cope",
+            "members":[stud,beam],"gap":{"value":0.5,"unit":"mm"},
+        }),
+    )
+    .unwrap();
+    assert_eq!(joint["status"], "applied");
+    let list = run("weldment_cut_list", json!({})).unwrap();
+    near(&member(&list, "Stud")["span_mm"][0], 30.5);
+    near(&member(&list, "Stud")["volume_mm3"], 304. * 469.5);
+    assert_eq!(
+        member(&list, "Stud")["start"]["connection"],
+        joint["connection"]
+    );
+    let edit = run(
+        "connect_members",
+        json!({
+            "expected_revision":5,"connection":joint["connection"],"kind":"cope",
+            "members":[stud,beam],"gap":{"value":2,"unit":"mm"},
+        }),
+    )
+    .unwrap();
+    assert_eq!(edit["revision"], 6);
+    let changed = run("weldment_cut_list", json!({})).unwrap();
+    near(&member(&changed, "Stud")["span_mm"][0], 32.);
+    near(&member(&changed, "Stud")["volume_mm3"], 304. * 468.);
+    let before_stale = host.document();
+    assert!(
+        run(
+            "connect_members",
+            json!({
+                "expected_revision":5,"connection":joint["connection"],"kind":"cope",
+                "members":[stud,beam],
+            })
+        )
+        .is_err()
+    );
+    assert_eq!(host.document(), before_stale);
+    run("undo", json!({"expected_revision":6})).unwrap();
+    near(
+        &member(&run("weldment_cut_list", json!({})).unwrap(), "Stud")["span_mm"][0],
+        30.5,
+    );
+    run("redo", json!({"expected_revision":7})).unwrap();
+    near(
+        &member(&run("weldment_cut_list", json!({})).unwrap(), "Stud")["span_mm"][0],
+        32.,
+    );
+    let round_stock = run(
+        "create_profile_stock",
+        json!({
+            "expected_revision":8,"name":"Round receiving stock","material":beam_stock["material"],
+            "shape":"round","width_mm":60,"height_mm":60,"wall_mm":3,
+        }),
+    )
+    .unwrap();
+    let round = run(
+        "create_members",
+        json!({
+            "expected_revision":9,"stock":round_stock["stock"],
+            "segments":[{"name":"Round beam","start_mm":[0,0,0],"end_mm":[1000,0,0]}],
+        }),
+    )
+    .unwrap()["parts"][0]["part"]
+        .clone();
+    let other_stud = run(
+        "create_members",
+        json!({
+            "expected_revision":10,"stock":stud_stock["stock"],
+            "segments":[{"name":"Other stud","start_mm":[700,0,0],"end_mm":[700,500,0]}],
+        }),
+    )
+    .unwrap()["parts"][0]["part"]
+        .clone();
+    let before_refusal = host.document();
+    let refusal = run(
+        "connect_members",
+        json!({
+            "expected_revision":11,"name":"Unsupported round cope","kind":"cope",
+            "members":[other_stud,round],
+        }),
+    )
+    .unwrap_err();
+    assert!(
+        refusal.message.contains("straight-sided receiving"),
+        "{}",
+        refusal.message
+    );
+    assert_eq!(host.document(), before_refusal);
+}
+
+#[test]
 fn mcp_creates_members_edits_them_and_reads_the_cut_list() {
     let host = Headless::new(
         Workspace::new(Document::new("Weldment").unwrap()).unwrap(),

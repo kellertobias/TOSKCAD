@@ -962,13 +962,31 @@ fn rust_reports_curved_miters_and_copes_at_their_connection() {
         let branch = MemberRequest::new("Branch", points(f.chs, [500., 0., 0.], [500., 500., 0.]));
         let members = [branch.body, main.body];
         create(&mut f, &[main, branch]);
-        let connection = connect(&mut f, "Joint", kind, members, 0.);
+        let before = f.s.document().clone();
+        let (connection, prepared) = model::prepare_connection(
+            &f.s,
+            f.s.revision(),
+            actor(),
+            "Joint",
+            &ConnectionDefinition {
+                kind,
+                members,
+                gap: None,
+            },
+        )
+        .unwrap();
         let refusal = Compiler::default()
-            .compile_with_backend(f.s.document(), f.s.revision(), GeometryBackend::Rust, None)
+            .compile_with_backend(
+                prepared.document(),
+                f.s.revision() + 1,
+                GeometryBackend::Rust,
+                None,
+            )
             .err()
             .expect("unsupported Rust connection");
         assert_eq!(refusal.entity, Some(connection));
         assert!(refusal.message.contains(diagnostic), "{}", refusal.message);
+        assert_eq!(f.s.document(), &before);
     }
 }
 
@@ -1108,6 +1126,118 @@ fn butt_joints_identify_the_continuing_member_and_trim_square() {
     create(&mut f, std::slice::from_ref(&crossing));
     let msg = refused(&f, ConnectionKind::Butt, [id(1), crossing.body]);
     assert!(msg.contains("both cut the start of"), "{msg}");
+}
+
+#[test]
+fn rust_straight_copes_keep_clearance_hollow_material_and_reopen() {
+    for gap in [0., 2.] {
+        let mut f = fixture();
+        let beam = MemberRequest::new("Beam", points(f.rhs, [0.; 3], [1000., 0., 0.]));
+        let stud = MemberRequest::new("Stud", points(f.shs, [500., 0., 0.], [500., 500., 0.]));
+        create(&mut f, &[beam.clone(), stud.clone()]);
+        let before = f.s.document().clone();
+        let connection = connect(
+            &mut f,
+            "Stud cope",
+            ConnectionKind::Cope,
+            [stud.body, beam.body],
+            gap,
+        );
+        let evaluate = |document: &Document| {
+            Compiler::default()
+                .compile_with_backend(document, 0, GeometryBackend::Rust, None)
+                .unwrap()
+        };
+        let model = evaluate(f.s.document());
+        let list = model.member_cut_list(f.s.document()).unwrap();
+        let stud_record = record(&list, "Stud");
+        near(stud_record.span_mm[0], 30. + gap);
+        rel(stud_record.volume_mm3, SHS_AREA * (470. - gap));
+        assert_eq!(stud_record.ends[0].kind, Some(ConnectionKind::Cope));
+        assert_eq!(stud_record.ends[0].connection, Some(connection));
+        assert!(stud_record.issues.is_empty());
+        let body = |id| model.solid(model.snapshot().bodies[&id]).unwrap();
+        near(body(stud.body).bounds().unwrap().min[1], 30. + gap);
+        near(
+            body(beam.body).volume_mm3().unwrap(),
+            (60. * 40. - 54. * 34.) * 1000.,
+        );
+        assert!(
+            body(stud.body)
+                .boolean(
+                    body(beam.body),
+                    multicad_kernel::BooleanOperation::Intersect,
+                    GeometryPolicy::default()
+                )
+                .unwrap()
+                .is_none()
+        );
+        body(stud.body)
+            .manufacturing_mesh_with_receipt(MeshOptions::default())
+            .unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("stud.step");
+        body(stud.body).write_step(&path).unwrap();
+        let imported = Solid::import_rust_step(
+            &std::fs::read_to_string(&path).unwrap(),
+            EntityId::new(),
+            GeometryPolicy::default(),
+        )
+        .unwrap();
+        rel(imported.volume_mm3().unwrap(), SHS_AREA * (470. - gap));
+        let project = ProjectFile::new(f.s.document().clone()).unwrap();
+        let mut bytes = Vec::new();
+        project_file::write(&project, &mut bytes, Default::default()).unwrap();
+        let reopened = project_file::read(
+            &mut bytes.as_slice(),
+            Default::default(),
+            &project_file::supported_capabilities(),
+        )
+        .unwrap()
+        .project;
+        assert_eq!(
+            evaluate(&reopened.document)
+                .member_cut_list(&reopened.document)
+                .unwrap(),
+            list
+        );
+        let mut edited = model::read_connection(f.s.document(), connection).unwrap();
+        edited.gap = Some(length(gap + 1.));
+        let prepared =
+            model::prepare_connection_edit(&f.s, f.s.revision(), actor(), connection, &edited)
+                .unwrap();
+        let candidate = evaluate(prepared.document());
+        let edited_list = candidate.member_cut_list(prepared.document()).unwrap();
+        near(record(&edited_list, "Stud").span_mm[0], 31. + gap);
+        rel(
+            record(&edited_list, "Stud").volume_mm3,
+            SHS_AREA * (469. - gap),
+        );
+        rel(
+            body(stud.body).volume_mm3().unwrap(),
+            SHS_AREA * (470. - gap),
+        );
+        f.s.commit(prepared).unwrap();
+        f.s.undo(f.s.revision(), actor()).unwrap();
+        assert_eq!(
+            evaluate(f.s.document())
+                .member_cut_list(f.s.document())
+                .unwrap(),
+            list
+        );
+        f.s.undo(f.s.revision(), actor()).unwrap();
+        assert_eq!(f.s.document(), &before);
+        rel(
+            record(
+                &evaluate(f.s.document())
+                    .member_cut_list(f.s.document())
+                    .unwrap(),
+                "Stud",
+            )
+            .volume_mm3,
+            SHS_AREA * 500.,
+        );
+    }
 }
 
 #[test]

@@ -342,10 +342,7 @@ fn rust_member(
     let mut miters = [None; 2];
     for joint in joints {
         let EndCut::Plane { point, normal } = joint.treatment.cut else {
-            return Err(error(
-                Some(joint.connection),
-                "Rust weldment members do not yet support coped ends",
-            ));
+            return rust_clipped_member(member, joints, id, policy);
         };
         let end = usize::from(joint.treatment.end == MemberEnd::End);
         if joint.treatment.kind == ConnectionKind::Miter {
@@ -410,7 +407,7 @@ fn rust_member(
             // A short member can lose part of its section after the first
             // miter. A generator-preserving sweep cannot represent that
             // intermediate shape; clip the actual extended stock instead.
-            rust_plane_clipped_member(member, joints, id, policy)
+            rust_clipped_member(member, joints, id, policy)
         }
         Err(cause) => Err(error(Some(connection), cause)),
     }
@@ -434,7 +431,7 @@ fn cut_stock_extent(member: &ResolvedMember, joints: &[Joint]) -> (f64, f64, f64
     (from, to, 2. * size + 100.)
 }
 
-fn rust_plane_clipped_member(
+fn rust_clipped_member(
     member: &ResolvedMember,
     joints: &[Joint],
     id: EntityId,
@@ -442,6 +439,24 @@ fn rust_plane_clipped_member(
 ) -> Result<Solid, ModelError> {
     let (from, to, size) = cut_stock_extent(member, joints);
     let profile = section_profile(member, from, None);
+    let straight = |profile: &CurvedProfile| {
+        profile
+            .outer
+            .iter()
+            .chain(profile.holes.iter().flatten())
+            .all(|edge| matches!(edge, CurvedEdge2d::Line { .. }))
+    };
+    if !straight(&profile) {
+        return Err(error(
+            Some(
+                joints
+                    .iter()
+                    .find(|joint| matches!(joint.treatment.cut, EndCut::Cope { .. }))
+                    .map_or(id, |joint| joint.connection),
+            ),
+            "Rust coped ends require straight-sided member sections",
+        ));
+    }
     let mut solid = Solid::rust_extrude_linear_named(
         &profile,
         member.frame.axis.map(|a| a * (to - from)),
@@ -452,11 +467,46 @@ fn rust_plane_clipped_member(
     )
     .map_err(|cause| error(Some(id), cause))?;
     for joint in joints {
-        let EndCut::Plane { point, normal } = joint.treatment.cut else {
-            return Err(error(
-                Some(joint.connection),
-                "Expected a planar member end",
-            ));
+        let (point, normal) = match joint.treatment.cut {
+            EndCut::Plane { point, normal } => (point, normal),
+            EndCut::Cope {
+                grow_mm,
+                point,
+                normal,
+            } => {
+                let partner = &joint.partner_member;
+                let profile = section_profile(partner, partner.start_offset_mm(), Some(grow_mm));
+                if !straight(&profile) {
+                    return Err(error(
+                        Some(joint.connection),
+                        "Rust coped ends require a straight-sided receiving section",
+                    ));
+                }
+                let envelope = Solid::rust_extrude_linear_named(
+                    &profile,
+                    partner.frame.axis.map(|a| a * partner.length_mm()),
+                    0.,
+                    id,
+                    &origins(
+                        id,
+                        partner,
+                        &profile,
+                        &format!("connection.{}.cope", joint.connection),
+                    ),
+                    policy,
+                )
+                .map_err(|cause| error(Some(joint.connection), cause))?;
+                solid = solid
+                    .boolean(&envelope, BooleanOperation::Subtract, policy)
+                    .map_err(|cause| error(Some(joint.connection), cause))?
+                    .ok_or_else(|| {
+                        error(
+                            Some(joint.connection),
+                            "The connection cut removes the whole member",
+                        )
+                    })?;
+                (point, normal)
+            }
         };
         solid = cut_plane(
             solid,
