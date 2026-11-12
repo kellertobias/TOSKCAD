@@ -127,6 +127,13 @@ impl Solid {
         })
     }
 
+    /// Actual retained ring material and its current centered, positive-height
+    /// chart. Authored sketch UV offsets and reverse travel are already applied.
+    pub fn rust_annulus_data(&self) -> Option<(Annulus, PlaneFrame)> {
+        self.annulus_body()
+            .map(|(body, frame)| (body.geometry, frame))
+    }
+
     pub(crate) fn annulus_body(&self) -> Option<(&AnnulusBody, PlaneFrame)> {
         match &self.body {
             SolidBody::Annulus(body, frame) => Some((body, *frame)),

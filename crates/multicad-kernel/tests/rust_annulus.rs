@@ -37,6 +37,30 @@ fn reversed_annular_extrusion_keeps_both_analytic_sketch_rims_and_the_authored_c
     assert_eq!(bounds.max, [9., 13., 13.]);
     assert_eq!(ring.solid_count().unwrap(), 1);
     assert!((ring.volume_mm3().unwrap() - 63. * std::f64::consts::PI).abs() < 1e-10);
+    let (material, centered) = ring.rust_annulus_data().unwrap();
+    assert_eq!(material.inner_radius_mm(), 2.);
+    assert_eq!(material.outer_radius_mm(), 5.);
+    assert_eq!(material.height_mm(), 3.);
+    assert_eq!(centered.origin, [4., 10., 8.]);
+    assert_eq!(centered.u, frame.u);
+    assert_eq!(centered.v, frame.v.map(|v| -v));
+    let placed = ring
+        .transformed(multicad_kernel::RigidTransform {
+            rotation: [[0., 0., 1.], [1., 0., 0.], [0., 1., 0.]],
+            translation_mm: [100., 200., 300.],
+        })
+        .unwrap();
+    let (placed_material, placed_frame) = placed.rust_annulus_data().unwrap();
+    assert_eq!(placed_material, material);
+    assert_eq!(placed_frame.origin, [108., 204., 310.]);
+    assert_eq!(placed_frame.u, [0., 1., 0.]);
+    assert_eq!(placed_frame.v, [-1., 0., 0.]);
+    assert!(
+        Solid::box_solid([1.; 3], policy)
+            .unwrap()
+            .rust_annulus_data()
+            .is_none()
+    );
     let topology = ring.topology_snapshot(feature, 4).unwrap();
     let face = |ordinal| {
         topology

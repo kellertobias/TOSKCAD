@@ -4,6 +4,7 @@ use crate::connection_receivers::{self, rust_through};
 use multicad_core::model::{ResolvedScrewHead, ScrewConnectionHardwareSource};
 use multicad_kernel::rust_kernel::helical_thread::Thread;
 mod blind;
+mod washers;
 
 pub(crate) fn validate(
     document: &Document,
@@ -58,16 +59,32 @@ fn through_nut(
     let fail = |message: &str| error(Some(id), message);
     let unsupported = || {
         fail(
-            "Rust screw connection requires one unseated through bore and a generated screw and nut",
+            "Rust screw connection requires one unseated through bore, generated screw and nut, and optional generated flat washers",
         )
     };
     let [receiver] = source.receivers.as_slice() else {
         return Err(unsupported());
     };
-    if source.mode != Mode::ThroughNut || source.hardware.len() != 2 {
+    if source.mode != Mode::ThroughNut
+        || !(2..=64).contains(&source.hardware.len())
+        || source.hardware.iter().any(|row| {
+            !matches!(
+                row.role,
+                Role::Screw | Role::Nut | Role::HeadWasher | Role::NutWasher
+            )
+        })
+        || [Role::Screw, Role::Nut].into_iter().any(|role| {
+            source
+                .hardware
+                .iter()
+                .filter(|row| row.role == role)
+                .count()
+                != 1
+        })
+    {
         return Err(unsupported());
     }
-    let mut placed = Vec::with_capacity(2);
+    let mut placed = Vec::with_capacity(source.hardware.len());
     for row in &source.hardware {
         let ScrewConnectionHardwareSource::Generated { part } = &row.source else {
             return Err(unsupported());
@@ -214,27 +231,31 @@ fn through_nut(
             "The actual screw shaft has insufficient clearance in the through bore",
         ));
     }
-    for (inner, outer) in [
-        (shaft, head.minimum_radius_mm()),
-        (nut_thread.spec().major_radius_mm, across_flats_mm / 2.),
-    ] {
-        if outer.min(bore.protected_radius_mm) - inner.max(bore.radius_mm) < 5. * proof_margin {
-            return Err(fail(
-                "The hardware has no complete overlapping flat bearing land on the receiving part",
-            ));
-        }
-    }
+    let [head_washers, nut_washers] = washers::prove(washers::Inputs {
+        placed: &placed,
+        axis,
+        bore,
+        grip,
+        head: [
+            (shank_radius_mm + head.neck_radius_mm()).max(shaft),
+            head.minimum_radius_mm(),
+        ],
+        nut: [nut_thread.spec().major_radius_mm, across_flats_mm / 2.],
+        shaft,
+        policy: input.policy,
+        connection: id,
+    })?;
 
     at(
         axis,
         placed_frame(&screw.part, screw.pose),
-        0.,
+        -head_washers,
         tolerance,
         id,
     )?;
-    at(axis, nut_frame, grip, tolerance, id)?;
+    at(axis, nut_frame, grip + nut_washers, tolerance, id)?;
     let (thread_start, thread_offset) = station(axis, screw_frame.origin_mm);
-    if thread_start > grip + tolerance || thread_offset > tolerance {
+    if thread_start > grip + nut_washers + tolerance || thread_offset > tolerance {
         return Err(fail(
             "The nut would intersect the plain shank before reaching the modeled thread",
         ));
@@ -267,7 +288,7 @@ fn through_nut(
         {
             continue;
         }
-        for row in [screw, nut] {
+        for row in &placed {
             let bounds = row.solid.bounds().map_err(|e| error(Some(id), e))?;
             if !(0..3).any(|i| {
                 bounds.max[i] + tolerance < leaf.bounds.min[i]
