@@ -27,6 +27,39 @@ pub fn read_rounded_thread_bore_compound(
         read_member(shell, id)
     })
 }
+pub(super) fn recognize_member(
+    shell: &mut Shell<'_, '_>,
+    id: u32,
+    faces: &[u32],
+) -> Result<Option<(Readback, ImportSolid)>> {
+    if faces.len() != 8 {
+        return Ok(None);
+    }
+    let mut count = 0;
+    for &id in faces {
+        let (surface, _, _) = face(shell, id)?;
+        if shell.simple(surface)?.name == "B_SPLINE_SURFACE_WITH_KNOTS" {
+            count += 1;
+        }
+    }
+    if count != 5 {
+        return Ok(None);
+    }
+    let (proof, body) = read_member(shell, id)?;
+    Ok(Some((
+        proof,
+        ImportSolid {
+            origin_mm: body.origin_mm,
+            u: body.u,
+            v: body.v,
+            height_mm: body.bore.length_mm(),
+            profile: ImportProfile::RoundedThreadBore {
+                spec: body.bore.thread().spec(),
+                stock_radius_mm: body.bore.radius_mm(),
+            },
+        },
+    )))
+}
 fn read_member(
     shell: &mut Shell<'_, '_>,
     id: u32,

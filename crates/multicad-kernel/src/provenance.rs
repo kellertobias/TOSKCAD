@@ -1053,7 +1053,9 @@ impl Solid {
         revision: u64,
     ) -> Result<TopologySnapshot, GeometryError> {
         if self.uses_rust_geometry() {
-            let mut snapshot = if let Some((body, frame)) = self.rounded_thread_body() {
+            let mut snapshot = if let Some((body, frame)) = self.rounded_thread_bore_body() {
+                body.topology(frame, owner, revision)?
+            } else if let Some((body, frame)) = self.rounded_thread_body() {
                 body.topology(frame, owner, revision)?
             } else if let Some((body, frame)) = self.helical_body() {
                 body.topology(frame, owner, revision)?

@@ -1,12 +1,12 @@
 //! Receiving stock in the retained thread chart, with a finite reconstruction proof.
 use super::*;
 
-pub(super) struct Chart {
+pub(in crate::geometry) struct Chart {
     origin: Point,
     inverse: [Point; 3],
 }
 impl Chart {
-    pub(super) fn new(frame: PlaneFrame) -> Self {
+    pub(in crate::geometry) fn new(frame: PlaneFrame) -> Self {
         Self::from_axes(frame.origin, [frame.u, frame.v, frame.normal()])
     }
     fn from_axes(origin: Point, axes: [Point; 3]) -> Self {
@@ -21,17 +21,17 @@ impl Chart {
             inverse: cofactors.map(|row| row.map(|value| value / determinant)),
         }
     }
-    pub(super) fn vector(&self, world: Point) -> Point {
+    pub(in crate::geometry) fn vector(&self, world: Point) -> Point {
         self.inverse.map(|row| dot(row, world))
     }
-    pub(super) fn point(&self, world: Point) -> Point {
+    pub(in crate::geometry) fn point(&self, world: Point) -> Point {
         self.vector(std::array::from_fn(|i| world[i] - self.origin[i]))
     }
 }
 
 /// A change of chart is affine even when both public frames pass their
 /// near-rigid admission. Its third column must not be reconstructed by cross.
-pub(super) struct StoredFrame {
+pub(in crate::geometry) struct StoredFrame {
     origin: Point,
     axes: [Point; 3],
     inverse: Chart,
@@ -132,7 +132,7 @@ fn difference_bound(a: Point, b: Point) -> f64 {
         .fold(0., |sum, (a, b)| (sum + (a - b).abs().next_up()).next_up())
 }
 
-pub(super) fn store(
+pub(in crate::geometry) fn store(
     thread: PlaneFrame,
     stock: PlaneFrame,
     local_bounds: Bounds,
@@ -181,7 +181,7 @@ pub(super) fn store(
 
 /// Preserve authored attachment coordinates independently of stock promotion's
 /// choice of outward geometric plane charts.
-pub(super) fn store_anchors(
+pub(in crate::geometry) fn store_anchors(
     thread: PlaneFrame,
     snapshot: TopologySnapshot,
     policy: GeometryPolicy,
@@ -230,9 +230,24 @@ pub(super) fn certify_tool_placement(
     policy: GeometryPolicy,
 ) -> Result<(), GeometryError> {
     let spec = tool.spec();
-    let extents = [spec.major_radius_mm, spec.major_radius_mm, spec.length_mm];
+    certify_tool_domain(
+        requested,
+        placed,
+        spec.major_radius_mm,
+        spec.length_mm,
+        policy,
+    )
+}
+pub(in crate::geometry) fn certify_tool_domain(
+    requested: PlaneFrame,
+    placed: PlaneFrame,
+    radius: f64,
+    length: f64,
+    policy: GeometryPolicy,
+) -> Result<(), GeometryError> {
+    let extents = [radius, radius, length];
     let bounds = Bounds {
-        min: [-spec.major_radius_mm, -spec.major_radius_mm, 0.],
+        min: [-radius, -radius, 0.],
         max: extents,
     };
     requested.checked_metric_bounds(bounds, policy)?;
@@ -253,4 +268,89 @@ pub(super) fn certify_tool_placement(
         ));
     }
     Ok(())
+}
+
+/// A clocked stock circle is a reparameterization, rather than a pointwise
+/// equality of U/V columns. Bound its floating clock normalization separately,
+/// then the actual published columns and complete stock axial interval.
+pub(in crate::geometry) fn certify_circular_stock(
+    stock: PlaneFrame,
+    placed: PlaneFrame,
+    clock: [f64; 2],
+    radius: f64,
+    height: f64,
+    reversed: bool,
+    policy: GeometryPolicy,
+) -> Result<(), GeometryError> {
+    let [c, s] = clock;
+    let cc = c * c;
+    let ss = s * s;
+    let sum = cc + ss;
+    let z = sum - cc;
+    let sum_error = ((cc - (sum - z)) + (ss - z)).abs().next_up();
+    // For the admitted clock near unit length, |sqrt(n)-1| <= |n-1|.
+    // Stock's checked Gram matrix gives ||[U V]|| < 2.
+    let mut radial = (sum - 1.).abs().next_up();
+    for error in [c.mul_add(c, -cc).abs(), s.mul_add(s, -ss).abs(), sum_error] {
+        radial = (radial + error.next_up()).next_up();
+    }
+    let sign = if reversed { -1. } else { 1. };
+    let (origin, origin_error) =
+        evaluated(stock, [0., 0., if reversed { height } else { 0. }], true);
+    let mut residual =
+        (difference_bound(placed.origin, origin) + error_sum(origin_error)).next_up();
+    for (actual, local) in [
+        (placed.u, [c, s, 0.]),
+        (placed.v, [-sign * s, sign * c, 0.]),
+    ] {
+        let (expected, error) = evaluated(stock, local, false);
+        let coefficient = (difference_bound(actual, expected) + error_sum(error)).next_up();
+        residual = (residual + (coefficient * radius).next_up()).next_up();
+    }
+    residual = (residual + ((2. * radial).next_up() * radius).next_up()).next_up();
+    let axial = difference_bound(placed.normal(), stock.normal().map(|v| sign * v));
+    residual = (residual + (axial * height).next_up()).next_up();
+    if !sum.is_finite()
+        || !(0.5..=2.).contains(&sum)
+        || !residual.is_finite()
+        || residual > policy.linear_tolerance_mm / 16.
+    {
+        return Err(error(
+            OPERATION,
+            GeometryErrorKind::Unsupported,
+            "Receiving thread cannot preserve the full clocked stock cylinder",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod circular_stock_tests {
+    use super::*;
+    #[test]
+    fn full_stock_radius_charges_proper_relative_tilt_without_changing_frames() {
+        let policy = GeometryPolicy::default();
+        let stock = PlaneFrame::default();
+        let angle = 1e-11_f64;
+        let placed = PlaneFrame {
+            u: [angle.cos(), 0., angle.sin()],
+            v: [0., 1., 0.],
+            ..Default::default()
+        };
+        stock.checked(policy).unwrap();
+        placed.checked(policy).unwrap();
+        placed
+            .checked_metric_extent([1e6, 1e6, 4.7], policy)
+            .unwrap();
+        assert!(certify_circular_stock(stock, stock, [1., 0.], 1e6, 4.7, false, policy).is_ok());
+        assert!(certify_circular_stock(stock, placed, [1., 0.], 5., 4.7, false, policy).is_ok());
+        assert_eq!(
+            certify_circular_stock(stock, placed, [1., 0.], 1e6, 4.7, false, policy)
+                .unwrap_err()
+                .kind,
+            GeometryErrorKind::Unsupported
+        );
+        assert_eq!(stock, PlaneFrame::default());
+        assert_eq!(placed.u, [angle.cos(), 0., angle.sin()]);
+    }
 }

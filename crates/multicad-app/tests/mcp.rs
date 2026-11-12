@@ -3364,3 +3364,158 @@ fn rust_stdio_rounded_families_edit_history_export_blind_import_and_reopen() {
         close(receipt["readback_volume_mm3"].as_f64().unwrap(), edited);
     }
 }
+
+#[test]
+fn rust_stdio_rounded_through_receivers_rollback_history_and_blind_reopen() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        document::Document,
+        model::{
+            self, PrimitiveParameters, PrimitiveRequest, ThreadFamily, ThreadFit, ThreadMode,
+            ThreadParameters, length as mm,
+        },
+        project_file::{self, ProjectFile},
+    };
+    for family in [
+        ThreadFamily::Bsw,
+        ThreadFamily::Bsf,
+        ThreadFamily::Bspp,
+        ThreadFamily::Round,
+    ] {
+        let mut parameters = if family == ThreadFamily::Round {
+            model::round_thread_presets()[1].parameters()
+        } else {
+            let row = model::whitworth_thread_presets()
+                .into_iter()
+                .find(|p| p.family == family)
+                .unwrap();
+            ThreadParameters {
+                family,
+                major_diameter: mm(row.diameter_mm),
+                pitch: mm(row.pitch_mm),
+                ..Default::default()
+            }
+        };
+        parameters.fit = match family {
+            ThreadFamily::Bspp => ThreadFit::BsppInternal,
+            ThreadFamily::Round => ThreadFit::NominalBasic,
+            _ => ThreadFit::WhitworthMediumInternal,
+        };
+        let mut session =
+            Session::new(Document::new("Rounded receiving protocol").unwrap()).unwrap();
+        let initial = parameters
+            .resolve(session.parameters(), ThreadMode::CutInternal)
+            .unwrap();
+        parameters.length = mm(2.37 * initial.pitch_mm);
+        let resolved = parameters
+            .resolve(session.parameters(), ThreadMode::CutInternal)
+            .unwrap();
+        let stock = PrimitiveRequest::new(
+            "Receiving stock",
+            PrimitiveParameters::Cylinder {
+                radius: mm(resolved.major_radius_mm + 2.),
+                height: parameters.length.clone(),
+                frame: Default::default(),
+            },
+        );
+        let prepared =
+            model::prepare_primitive(&session, 0, Actor::local(Channel::Ui), &stock).unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("rounded-receiver.tcd");
+        let import_project = directory.path().join("imported.tcd");
+        let mut bytes = vec![];
+        project_file::write(
+            &ProjectFile::new(session.document().clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        std::fs::write(&project, bytes).unwrap();
+        let args = [
+            "--rust-model",
+            "--project",
+            project.to_str().unwrap(),
+            "--export-dir",
+            directory.path().to_str().unwrap(),
+        ];
+        let mut client = Client::start(&args);
+        let stock_volume = client.part_volume();
+        let revision = client.revision();
+        let profiles = client.ok("thread_profiles", json!({}));
+        let row = profiles["families"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["family"] == serde_json::to_value(family).unwrap())
+            .unwrap();
+        assert_eq!(row["modeled_cut_internal_supported"], true);
+        assert!(
+            row["modeled_cut_internal_scope"]
+                .as_str()
+                .unwrap()
+                .contains("full-through")
+        );
+        let arguments = json!({"expected_revision":revision,"name":"Rounded through bore","mode":"cut_internal","target_part":stock.body,"family":family,"fit":parameters.fit,"major_diameter":parameters.major_diameter,"pitch":parameters.pitch,"length":parameters.length,"hand":"left"});
+        let mut bad = arguments.clone();
+        bad["length"] = length(resolved.length_mm + resolved.pitch_mm);
+        client.fail("set_thread", bad);
+        assert_eq!(client.revision(), revision);
+        close(client.part_volume(), stock_volume);
+        let created = client.ok("set_thread", arguments);
+        let volume = client.part_volume();
+        assert!(volume < stock_volume);
+        let revision = client.revision();
+        let inspected = client.ok("inspect_thread", json!({"thread":created["thread"]}));
+        assert_eq!(
+            inspected["source"]["parameters"]["family"],
+            serde_json::to_value(family).unwrap()
+        );
+        client.ok("undo", json!({"expected_revision":revision}));
+        close(client.part_volume(), stock_volume);
+        let revision = client.revision();
+        client.ok("redo", json!({"expected_revision":revision}));
+        close(client.part_volume(), volume);
+        let revision = client.revision();
+        client.ok(
+            "set_thread",
+            json!({"expected_revision":revision,"thread":created["thread"],"hand":"right"}),
+        );
+        let revision = client.revision();
+        let edited = client.ok("inspect_thread", json!({"thread":created["thread"]}));
+        assert_eq!(edited["resolved"]["hand"], "right");
+        close(client.part_volume(), volume);
+        let receipt = client.ok(
+            "export_step",
+            json!({"part":created["part"],"file_name":"bore.step"}),
+        );
+        close(receipt["readback_volume_mm3"].as_f64().unwrap(), volume);
+        client.ok("save_project", json!({"expected_revision":revision}));
+        drop(client);
+        let mut reopened = Client::start(&args);
+        close(reopened.part_volume(), volume);
+        drop(reopened);
+        let args = [
+            "--rust-model",
+            "--project",
+            import_project.to_str().unwrap(),
+            "--export-dir",
+            directory.path().to_str().unwrap(),
+        ];
+        let mut imported = Client::start(&args);
+        let revision = imported.revision();
+        let result = imported.ok(
+            "import_step",
+            json!({"expected_revision":revision,"file_name":"bore.step"}),
+        );
+        let part = result["parts"][0].clone();
+        close(imported.part_volume(), volume);
+        let revision = imported.revision();
+        imported.ok("save_project", json!({"expected_revision":revision}));
+        drop(imported);
+        let mut reopened = Client::start(&args);
+        close(reopened.part_volume(), volume);
+        let receipt = reopened.ok("export_step", json!({"part":part,"file_name":"again.step"}));
+        close(receipt["readback_volume_mm3"].as_f64().unwrap(), volume);
+    }
+}

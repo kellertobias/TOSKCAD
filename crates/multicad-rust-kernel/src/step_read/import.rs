@@ -28,6 +28,11 @@ use pocketed::{PocketRim, canonical_pockets};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ImportProfile {
+    /// Five inward rounded patches, both annular caps and the full outer stock cylinder.
+    RoundedThreadBore {
+        spec: crate::rounded_thread::Spec,
+        stock_radius_mm: f64,
+    },
     /// Five independently proved double-rounded helical shaft patches and both finite caps.
     RoundedThread {
         spec: crate::rounded_thread::Spec,

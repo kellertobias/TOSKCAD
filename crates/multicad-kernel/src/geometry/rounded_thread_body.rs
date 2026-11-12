@@ -216,7 +216,10 @@ pub(super) fn identity_values(spec: Spec, frame: PlaneFrame) -> impl Iterator<It
         ])
 }
 impl RoundedThreadBody {
-    fn properties(&self) -> Result<&metrics::Metrics, GeometryError> {
+    pub(super) fn tolerance(&self) -> f64 {
+        self.tolerance
+    }
+    pub(super) fn properties(&self) -> Result<&metrics::Metrics, GeometryError> {
         self.metrics
             .get_or_init(|| metrics::compute(&self.geometry))
             .as_ref()
@@ -282,7 +285,10 @@ impl RoundedThreadBody {
             })
             .collect())
     }
-    fn mass(&self, frame: PlaneFrame) -> Result<RoundedThreadMassProperties, GeometryError> {
+    pub(super) fn mass(
+        &self,
+        frame: PlaneFrame,
+    ) -> Result<RoundedThreadMassProperties, GeometryError> {
         let m = self.properties()?;
         let basis = [frame.u, frame.v, frame.normal()];
         let covariance: [[f64; 3]; 3] = std::array::from_fn(|i| {

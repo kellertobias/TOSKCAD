@@ -151,9 +151,12 @@ pub(crate) fn build_rust(
     if thread.representation == ThreadRepresentation::Modeled
         && rounded_family(source.parameters.family)
     {
-        if source.mode != ThreadMode::NewExternal {
+        if !matches!(
+            source.mode,
+            ThreadMode::NewExternal | ThreadMode::CutInternal
+        ) {
             return Err(fail(
-                "Rust double-rounded threads currently require standalone NewExternal; receiving closures are not certified",
+                "Rust double-rounded external receiving closures are not certified",
             ));
         }
         if thread.profile.radial_taper != 0. || thread.starts != 1 {
@@ -193,8 +196,20 @@ pub(crate) fn build_rust(
             u: thread.frame.u,
             v: thread.frame.v,
         };
-        return Solid::rust_rounded_thread(spec, feature, frame, policy)
-            .map_err(|cause| error(Some(feature), cause));
+        return if source.mode == ThreadMode::CutInternal {
+            let target = receiving_target(feature, source, solids)?
+                .ok_or_else(|| fail("Receiving rounded thread has no target predecessor"))?;
+            target.rust_cut_rounded_internal_thread(
+                spec,
+                thread.minimum_wall_mm,
+                feature,
+                frame,
+                policy,
+            )
+        } else {
+            Solid::rust_rounded_thread(spec, feature, frame, policy)
+        }
+        .map_err(|cause| error(Some(feature), cause));
     }
     validate_rust_family(feature, source.parameters.family)?;
     if thread.representation == ThreadRepresentation::CosmeticEnvelope
@@ -253,7 +268,8 @@ fn rounded_family(family: ThreadFamily) -> bool {
 /// Thread-tool mode availability; dimensions and closures still require proof.
 pub fn rust_thread_mode_supported(family: ThreadFamily, mode: ThreadMode) -> bool {
     rust_thread_family_supported(family)
-        || (mode == ThreadMode::NewExternal && rounded_family(family))
+        || (matches!(mode, ThreadMode::NewExternal | ThreadMode::CutInternal)
+            && rounded_family(family))
 }
 
 pub(crate) fn validate_rust_family(

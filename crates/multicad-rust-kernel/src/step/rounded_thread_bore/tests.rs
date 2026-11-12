@@ -187,3 +187,34 @@ fn independent_readback_precision_limit_preserves_the_previous_writer() {
         .unwrap();
     assert!(crate::step_read::read_rounded_thread_bore(&w.finish().unwrap(), 1e-7).is_ok());
 }
+
+#[test]
+fn generic_analytic_import_retains_the_proved_hole_and_both_dispatch_views() {
+    let b = bore(false);
+    let file = write_rounded_thread_bore(&b, [0.; 3], [1., 0., 0.], [0., 1., 0.], 1e-7).unwrap();
+    let (proof, imported) = crate::step_read::read_import_solid(&file, 1e-7).unwrap();
+    let crate::step_read::ImportProfile::RoundedThreadBore {
+        spec,
+        stock_radius_mm,
+    } = imported.profile
+    else {
+        panic!("actual receiver must retain its hole");
+    };
+    assert_eq!(stock_radius_mm, b.radius_mm());
+    assert_eq!(spec.left_hand, b.thread().spec().left_hand);
+    let physical = crate::step_read::ImportedRoundedThreadBore {
+        bore: ThroughBore::new(Thread::new(spec).unwrap(), stock_radius_mm).unwrap(),
+        origin_mm: imported.origin_mm,
+        u: imported.u,
+        v: imported.v,
+    };
+    assert!(crate::step_read::rounded_thread_bore_import_matches(
+        &physical,
+        &b,
+        [[0.; 3], [1., 0., 0.], [0., 1., 0.]],
+        1e-7
+    ));
+    assert!((proof.volume_mm3 - b.volume_mm3()).abs() < 1e-6);
+    let analytic = crate::step_read::read_analytic_solid(&file, 1e-7).unwrap();
+    assert_eq!(analytic.face_count, 8);
+}

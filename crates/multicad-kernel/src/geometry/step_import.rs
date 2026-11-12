@@ -237,6 +237,10 @@ impl Solid {
         };
         frame.checked(policy)?;
         match profile {
+            ImportProfile::RoundedThreadBore {
+                spec,
+                stock_radius_mm,
+            } => Self::import_rounded_thread_bore(spec, stock_radius_mm, frame, feature, policy),
             ImportProfile::RoundedThread { spec } => {
                 Self::import_rounded_thread(spec, frame, feature, policy)
             }
@@ -1005,7 +1009,8 @@ fn verify(
     orthogonal: bool,
 ) -> Result<(), GeometryError> {
     verify_step_metrics(solid, readback, tolerance)?;
-    if solid.rounded_thread_body().is_some()
+    if solid.rounded_thread_bore_body().is_some()
+        || solid.rounded_thread_body().is_some()
         || solid.helical_body().is_some()
         || solid.helical_tube_cut_body().is_some()
     {

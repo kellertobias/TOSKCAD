@@ -647,8 +647,12 @@ pub(super) fn thread_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolRe
                 ThreadFit::Metric6HInternal | ThreadFit::Unified2B | ThreadFit::WhitworthMediumInternal | ThreadFit::BsppInternal
             )).collect()
         } else { vec![] };
+        let modeled_cut_internal_supported=if rust {multicad_model::rust_thread_mode_supported(family,ThreadMode::CutInternal)} else {family.supported()};
+        let modeled_cut_internal_fit_classes:Vec<_>=if modeled_cut_internal_supported {cosmetic_fit_classes.iter().copied().filter(|fit|!matches!(fit,ThreadFit::Metric6gExternal|ThreadFit::Unified2A|ThreadFit::WhitworthMediumExternal|ThreadFit::BsppClassBExternal)).collect()} else {vec![]};
         json!({"family":family,"label":family.label(),"supported":!fit_classes.is_empty(),"source":family.source(),"fit_classes":fit_classes,
             "modeled_new_external_supported":modeled_new_external_supported,"modeled_new_external_fit_classes":modeled_new_external_fit_classes,
+            "modeled_cut_internal_supported":modeled_cut_internal_supported,"modeled_cut_internal_fit_classes":modeled_cut_internal_fit_classes,
+            "modeled_cut_internal_scope":if rust && matches!(family,ThreadFamily::Bsw|ThreadFamily::Bsf|ThreadFamily::Bspp|ThreadFamily::Round) {"straight single-start full-through cylindrical stock; literal tool length must equal stock height"} else {"qualified receiving closures only"},
             "cosmetic_new_external_supported":family.supported(),"cosmetic_fit_classes":cosmetic_fit_classes})
     }).collect();
     let unified_presets:Vec<_> = model::unified_thread_presets().into_iter().map(|p|json!({

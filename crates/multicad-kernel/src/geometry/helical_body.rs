@@ -27,7 +27,7 @@ use external::ExternalStock;
 mod boundary;
 mod nut;
 mod screw;
-mod stock_frame;
+pub(super) mod stock_frame;
 use blind::BlindStock;
 pub use blind::{BlindThreadCut, BlindThreadMating};
 
@@ -367,6 +367,9 @@ impl Solid {
         imported: &multicad_rust_kernel::step_read::ImportSolid,
         tolerance: f64,
     ) -> bool {
+        if self.rounded_thread_bore_body().is_some() {
+            return self.matches_imported_rounded_thread_bore(imported, tolerance);
+        }
         if self.rounded_thread_body().is_some() {
             return self.matches_imported_rounded_thread(imported, tolerance);
         }
@@ -432,6 +435,15 @@ impl Solid {
     /// For cylindrical receivers, report tool length separately from occupied
     /// material. STEP imports recover only material, so their tool length equals it.
     pub fn rust_receiving_thread_intervals(&self) -> Option<ReceivingThreadIntervals> {
+        if let Some((body, frame)) = self.rounded_thread_bore_body() {
+            let length = body.geometry.length_mm();
+            return Some(ReceivingThreadIntervals {
+                frame,
+                requested_tool_length_mm: length,
+                physical_thread_length_mm: length,
+                stock_length_mm: length,
+            });
+        }
         let (body, frame) = self.helical_body()?;
         if let HelicalForm::External(stock) = &body.form {
             return Some(stock.intervals(body.geometry, frame));
@@ -656,6 +668,16 @@ impl Solid {
         &self,
         source: &str,
     ) -> Option<Result<f64, multicad_rust_kernel::step_read::ReadError>> {
+        if let Some((body, frame)) = self.rounded_thread_bore_body() {
+            return Some(multicad_rust_kernel::step_read::verify_rounded_thread_bore(
+                source,
+                &body.geometry,
+                frame.origin,
+                frame.u,
+                frame.v,
+                self.policy.linear_tolerance_mm,
+            ));
+        }
         if let Some((body, frame)) = self.rounded_thread_body() {
             return Some(multicad_rust_kernel::step_read::verify_rounded_thread(
                 source,
@@ -736,6 +758,9 @@ impl Solid {
     /// Query the modeled helical material in world coordinates.
     pub fn rust_thread_contains(&self, point_mm: Point) -> Result<bool, GeometryError> {
         self.policy.point(point_mm)?;
+        if let Some((body, frame)) = self.rounded_thread_bore_body() {
+            return Ok(body.contains(frame, point_mm));
+        }
         if let Some((body, frame)) = self.rounded_thread_body() {
             return Ok(body.contains(frame, point_mm));
         }
