@@ -52,6 +52,7 @@ pub mod step_read;
 pub mod straight_rack;
 pub mod tapered_thread;
 pub mod thread_end_relief;
+pub mod thread_entry_chamfer;
 pub mod threaded_shaft;
 pub mod torus;
 pub mod trim_curve;
