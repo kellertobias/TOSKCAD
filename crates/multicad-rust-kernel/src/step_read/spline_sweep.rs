@@ -10,7 +10,7 @@ struct FaceWire {
     surface: u32,
     forward: bool,
     outer: Vec<Traversal>,
-    hole: Option<Vec<Traversal>>,
+    holes: Vec<Vec<Traversal>>,
 }
 
 enum Geometry {
@@ -73,7 +73,7 @@ fn read_member_with<T>(
             let side = usize::from(dot(cap.normal, normal) > 0.);
             // A hub end has one circle and at most a circular bore. An
             // internal ring cap has an outside circle around a cavity.
-            let ring_cap = face.hole.as_ref().is_some_and(|hole| hole.len() > 1);
+            let ring_cap = face.holes.iter().any(|hole| hole.len() > 1);
             let destination = if face.outer.len() == 1 && !ring_cap {
                 &mut ends[side]
             } else {
@@ -139,25 +139,28 @@ fn read_member_with<T>(
 
 fn read_face(reader: &mut Shell<'_, '_>, id: u32, edges: &mut Edges) -> Result<FaceWire> {
     let (bounds, surface, forward) = face_args(reader, id)?;
-    if !(1..=2).contains(&bounds.len()) {
+    if !(1..=MAX_VERTICES + 1).contains(&bounds.len()) {
         return Err(ReadError::Unsupported);
     }
     let implicit_outer = bounds.len() == 1;
     let mut outer = None;
-    let mut hole = None;
+    let mut holes = Vec::new();
     for id in bounds {
         let (exterior, wire, sense) = reader.bound(id, implicit_outer)?;
         let ring = read_ring(reader, wire, sense, edges)?;
-        let slot = if exterior { &mut outer } else { &mut hole };
-        if slot.replace(ring).is_some() {
-            return Err(ReadError::Invalid);
+        if exterior {
+            if outer.replace(ring).is_some() {
+                return Err(ReadError::Invalid);
+            }
+        } else {
+            holes.push(ring);
         }
     }
     Ok(FaceWire {
         surface,
         forward,
         outer: outer.ok_or(ReadError::Invalid)?,
-        hole,
+        holes,
     })
 }
 
@@ -276,7 +279,7 @@ fn face_plane(reader: &Shell<'_, '_>, face: &FaceWire) -> Result<Plane> {
 
 fn rim_uses(face: &FaceWire) -> BTreeMap<u32, (bool, bool)> {
     std::iter::once((&face.outer, false))
-        .chain(face.hole.iter().map(|ring| (ring, true)))
+        .chain(face.holes.iter().map(|ring| (ring, true)))
         .flat_map(|(ring, bore)| {
             ring.iter()
                 .map(move |edge| (edge.edge, (edge.forward, bore)))
@@ -298,7 +301,7 @@ fn verify_wall(
     let [_, _, _, _] = wall.outer.as_slice() else {
         return Err(ReadError::Unsupported);
     };
-    if wall.hole.is_some() {
+    if !wall.holes.is_empty() {
         return Err(ReadError::Unsupported);
     }
     let start = wall

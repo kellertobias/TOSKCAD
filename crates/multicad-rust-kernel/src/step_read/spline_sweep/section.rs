@@ -16,10 +16,21 @@ pub(super) fn verify(
     plane: &Plane,
     face: &FaceWire,
 ) -> Result<f64> {
-    if let ([rim], Some(hole)) = (face.outer.as_slice(), &face.hole)
+    if let ([rim], [hole]) = (face.outer.as_slice(), face.holes.as_slice())
         && let Geometry::Analytic(Curve::Circle(circle)) = edges[&rim.edge].geometry
     {
         return verify_ring(reader, edges, plane, (circle, rim.forward), hole);
+    }
+    let circular_hole = face.holes.first().and_then(|ring| match ring.as_slice() {
+        [edge] => match edges[&edge.edge].geometry {
+            Geometry::Analytic(Curve::Circle(circle)) => Some((circle, edge)),
+            _ => None,
+        },
+        _ => None,
+    });
+    let legacy_hole = face.holes.is_empty() || (face.holes.len() == 1 && circular_hole.is_some());
+    if !legacy_hole {
+        return verify_general(reader, edges, plane, face);
     }
     if face.outer.len() < 3
         || face
@@ -52,13 +63,7 @@ pub(super) fn verify(
         .iter()
         .map(|edge| section_area(reader, &edges[&edge.edge].geometry, plane, edge))
         .sum::<Result<f64>>()?;
-    if let Some(hole) = &face.hole {
-        let [edge] = hole.as_slice() else {
-            return Err(ReadError::Unsupported);
-        };
-        let Geometry::Analytic(Curve::Circle(circle)) = edges[&edge.edge].geometry else {
-            return Err(ReadError::Unsupported);
-        };
+    if let Some((circle, edge)) = circular_hole {
         if !circle.within_plane(plane, tolerance)
             || (dot(circle.normal, plane.normal) > 0.) == edge.forward
         {
@@ -236,6 +241,56 @@ fn directed_sweep(round: Round, plane: &Plane, forward: bool) -> f64 {
 fn project(plane: &Plane, p: Point) -> Point2 {
     let d = sub(p, plane.origin);
     [dot(d, plane.u), dot(d, plane.v)]
+}
+
+fn verify_general(
+    reader: &Shell<'_, '_>,
+    edges: &Edges,
+    plane: &Plane,
+    face: &FaceWire,
+) -> Result<f64> {
+    if face.outer.len() < 3 {
+        return Err(ReadError::Unsupported);
+    }
+
+    for ring in std::iter::once(&face.outer).chain(&face.holes) {
+        if ring.is_empty()
+            || ring
+                .iter()
+                .map(|edge| edge.start)
+                .collect::<BTreeSet<_>>()
+                .len()
+                != ring.len()
+        {
+            return Err(ReadError::Invalid);
+        }
+        for edge in ring {
+            if edge.start == edge.end
+                && matches!(edges[&edge.edge].geometry, Geometry::Analytic(Curve::Line))
+            {
+                return Err(ReadError::Invalid);
+            }
+            match edges[&edge.edge].geometry {
+                Geometry::Analytic(Curve::Circle(circle)) => {
+                    if ring.len() != 1 || !circle.within_plane(plane, reader.tolerance) {
+                        return Err(ReadError::Invalid);
+                    }
+                }
+                _ => {
+                    boundary(reader, &edges[&edge.edge].geometry, plane, edge)?;
+                }
+            }
+        }
+    }
+    let outer = reconstruction::section_edges(reader, edges, plane, &face.outer, false)?;
+    let holes = face
+        .holes
+        .iter()
+        .map(|ring| reconstruction::section_edges(reader, edges, plane, ring, false))
+        .collect::<Result<Vec<_>>>()?;
+    let sweep = crate::spline_sweep::Sweep::new_rings(outer, holes, 1., reader.tolerance)
+        .map_err(certificate_error)?;
+    Ok(sweep.area_mm2())
 }
 
 #[cfg(test)]

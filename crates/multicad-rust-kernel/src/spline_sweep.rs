@@ -96,7 +96,7 @@ impl Edge {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sweep {
     outline: Vec<Edge>,
-    hole: Option<normal_sweep::Edge>,
+    holes: Vec<Vec<Edge>>,
     height_mm: f64,
     area_mm2: f64,
     centroid_mm: Point,
@@ -119,17 +119,49 @@ impl Sweep {
         tolerance: f64,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Self, ConstructionError> {
+        Self::new_rings_with_interrupt(
+            outline,
+            hole.into_iter()
+                .map(|edge| vec![Edge::Analytic(edge)])
+                .collect(),
+            height_mm,
+            tolerance,
+            interrupt,
+        )
+    }
+    /// Construct one exterior and disjoint, strictly contained clockwise holes.
+    pub fn new_rings(
+        outline: Vec<Edge>,
+        holes: Vec<Vec<Edge>>,
+        height_mm: f64,
+        tolerance: f64,
+    ) -> Result<Self, ConstructionError> {
+        Self::new_rings_with_interrupt(outline, holes, height_mm, tolerance, None)
+    }
+    pub fn new_rings_with_interrupt(
+        outline: Vec<Edge>,
+        holes: Vec<Vec<Edge>>,
+        height_mm: f64,
+        tolerance: f64,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Self, ConstructionError> {
         if !tolerance.is_finite() || tolerance <= 0. {
             return Err(ConstructionError::Invalid);
         }
         if interrupt.is_some_and(|interrupt| interrupt()) {
             return Err(ConstructionError::Cancelled);
         }
-        if outline.len() > crate::polygon::MAX_VERTICES || height_mm > 1e8 {
+        if holes.len() > crate::polygon::MAX_VERTICES
+            || outline
+                .len()
+                .saturating_add(holes.iter().map(Vec::len).sum::<usize>())
+                > crate::polygon::MAX_VERTICES
+            || height_mm > 1e8
+        {
             return Err(ConstructionError::Limit);
         }
         let mut spans = 0_usize;
-        for edge in &outline {
+        for edge in outline.iter().chain(holes.iter().flatten()) {
             if interrupt.is_some_and(|interrupt| interrupt()) {
                 return Err(ConstructionError::Cancelled);
             }
@@ -144,9 +176,20 @@ impl Sweep {
 
         // This fixed-size metric pass has no resource failure; the controlled
         // section certificate below owns the complete construction budget.
-        let result = Self::from_verified(outline, hole, height_mm, tolerance)
-            .map_err(|_| ConstructionError::Invalid)?;
-        validation::authored(&result.outline, result.hole, tolerance, interrupt)?;
+        let legacy = match holes.as_slice() {
+            [] => Some(None),
+            [ring] => match ring.as_slice() {
+                [Edge::Analytic(edge @ normal_sweep::Edge::Circle { .. })] => Some(Some(*edge)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let result = match legacy {
+            Some(hole) => Self::from_verified(outline, hole, height_mm, tolerance),
+            None => Self::from_verified_rings(outline, holes, height_mm, tolerance),
+        }
+        .map_err(|_| ConstructionError::Invalid)?;
+        validation::authored_rings(&result.outline, &result.holes, tolerance, interrupt)?;
         Ok(result)
     }
     /// The decoder has already proved the source rim simple, correctly
@@ -157,37 +200,62 @@ impl Sweep {
         height_mm: f64,
         tolerance: f64,
     ) -> Result<Self, Error> {
+        Self::from_verified_rings(
+            outline,
+            hole.into_iter()
+                .map(|edge| vec![Edge::Analytic(edge)])
+                .collect(),
+            height_mm,
+            tolerance,
+        )
+    }
+    pub(crate) fn from_verified_rings(
+        outline: Vec<Edge>,
+        holes: Vec<Vec<Edge>>,
+        height_mm: f64,
+        tolerance: f64,
+    ) -> Result<Self, Error> {
         if !(3..=crate::polygon::MAX_VERTICES).contains(&outline.len())
             || !height_mm.is_finite() || height_mm <= tolerance
-            || hole.is_some_and(|hole| {
-                !matches!(hole, normal_sweep::Edge::Circle { clockwise: true, radius_mm, .. } if radius_mm > tolerance)
-            })
+            || holes.iter().any(|ring| ring.is_empty() || (ring.len() < 3 && !matches!(ring.as_slice(), [Edge::Analytic(normal_sweep::Edge::Circle { clockwise:true, radius_mm, .. })] if *radius_mm > tolerance)))
         {
             return Err(Error::Invalid);
         }
         let mut join_adjustment_mm: f64 = 0.;
-        for (edge, next) in outline.iter().zip(outline.iter().cycle().skip(1)) {
-            let [a, b] = [edge.point(1.), next.point(0.)];
-            let scale = a.into_iter().chain(b).map(f64::abs).fold(1., f64::max);
-            let gap = length(sub(a, b));
-            let roundoff = (32. * f64::EPSILON * scale)
-                .max(tolerance * 1e-3)
-                .min(tolerance);
-            if gap > roundoff {
-                return Err(Error::Invalid);
+        for ring in std::iter::once(&outline).chain(&holes) {
+            for (edge, next) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+                let [a, b] = [edge.point(1.), next.point(0.)];
+                let scale = a.into_iter().chain(b).map(f64::abs).fold(1., f64::max);
+                let gap = length(sub(a, b));
+                let roundoff = (32. * f64::EPSILON * scale)
+                    .max(tolerance * 1e-3)
+                    .min(tolerance);
+                if gap > roundoff {
+                    return Err(Error::Invalid);
+                }
+                join_adjustment_mm = join_adjustment_mm.max(gap);
             }
-            join_adjustment_mm = join_adjustment_mm.max(gap);
         }
-
         let origin = outline[0].point(0.);
         let mut sum = [Sum::default(); 3];
-        for moments in outline
-            .iter()
-            .map(|edge| edge.moments(origin))
-            .chain(hole.map(|hole| hole.moments(origin)))
-        {
-            for (sum, term) in sum.iter_mut().zip(moments) {
-                sum.add(term);
+        for (index, ring) in std::iter::once(&outline).chain(&holes).enumerate() {
+            let mut signed = Sum::default();
+            for edge in ring {
+                let moments = edge.moments(origin);
+                signed.add(moments[0]);
+                for (sum, term) in sum.iter_mut().zip(moments) {
+                    sum.add(term);
+                }
+            }
+            let area = signed.value();
+            if !area.is_finite()
+                || if index == 0 {
+                    area <= tolerance * tolerance
+                } else {
+                    area >= -tolerance * tolerance
+                }
+            {
+                return Err(Error::Invalid);
             }
         }
         let [area_mm2, x, y] = sum.map(Sum::value);
@@ -200,7 +268,7 @@ impl Sweep {
         }
         Ok(Self {
             outline,
-            hole,
+            holes,
             height_mm,
             area_mm2,
             centroid_mm,
@@ -212,8 +280,25 @@ impl Sweep {
         &self.outline
     }
 
+    /// Legacy singleton circular-bore view; use `holes()` for every actual loop.
     pub fn hole(&self) -> Option<normal_sweep::Edge> {
-        self.hole
+        match self.holes.as_slice() {
+            [ring] => match ring.as_slice() {
+                [Edge::Analytic(edge @ normal_sweep::Edge::Circle { .. })] => Some(*edge),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    /// All actual inner boundary loops; wall order follows these stored rings.
+    pub fn holes(&self) -> &[Vec<Edge>] {
+        &self.holes
+    }
+    pub fn rings(&self) -> impl Iterator<Item = &[Edge]> {
+        std::iter::once(self.outline.as_slice()).chain(self.holes.iter().map(Vec::as_slice))
+    }
+    pub fn edges(&self) -> impl Iterator<Item = &Edge> {
+        self.rings().flatten()
     }
 
     pub fn height_mm(&self) -> f64 {
@@ -240,15 +325,14 @@ impl Sweep {
         if !error_mm2.is_finite() || error_mm2 <= 0. {
             return Err(Error::Invalid);
         }
-        let allowance = error_mm2 / self.height_mm / self.outline.len() as f64;
-        let analytic_area = 2. * self.area_mm2
-            + self.hole.map_or(0., normal_sweep::Edge::length_mm) * self.height_mm;
+        let allowance = error_mm2 / self.height_mm / self.edges().count() as f64;
+        let analytic_area = 2. * self.area_mm2;
         if allowance <= 0. {
             return Err(Error::Invalid);
         }
         let mut budget = cubic::MAX_LENGTH_SPLITS;
         let mut sum = [Sum::default(); 2];
-        for edge in &self.outline {
+        for edge in self.edges() {
             let bounds = match edge {
                 Edge::Analytic(edge) => [edge.length_mm(); 2],
                 Edge::Cubic(edge) => edge.length_bounds_with_budget(allowance, &mut budget)?,
@@ -292,27 +376,24 @@ impl Sweep {
         if options.deflection <= 0. {
             return Err(MeshError::UnresolvedBoundary);
         }
-        let mut samples = Vec::new();
-        let limit = (options.triangle_limit + 4) / 4;
-        for (i, edge) in self.outline.iter().enumerate() {
-            let mut points = edge.sample_with_limit(options, limit - samples.len())?;
-            // The next edge supplies the canonical shared vertex.
-            points.pop();
-            samples.extend(points.into_iter().map(|point| (point, (i + 2) as u32)));
-        }
         let mut footprint = Footprint::default();
-        footprint.ring(samples.into_iter(), options)?;
-        if let Some(normal_sweep::Edge::Circle {
-            center, radius_mm, ..
-        }) = self.hole
-        {
-            footprint.circle(
-                center,
-                radius_mm,
-                (self.outline.len() + 2) as u32,
-                true,
-                options,
-            )?;
+        let limit = (options.triangle_limit + 4) / 4;
+        let mut count = 0usize;
+        let mut wall = 2_u32;
+        for (ring_index, ring) in self.rings().enumerate() {
+            let mut samples = Vec::new();
+            for edge in ring {
+                let mut points = edge.sample_with_limit(options, limit.saturating_sub(count))?;
+                points.pop();
+                count += points.len();
+                samples.extend(points.into_iter().map(|point| (point, wall)));
+                wall += 1;
+            }
+            if ring_index == 0 {
+                footprint.ring(samples.into_iter(), options)?;
+            } else {
+                footprint.hole(samples.into_iter(), options)?;
+            }
         }
         footprint.tessellate(0., self.height_mm)
     }

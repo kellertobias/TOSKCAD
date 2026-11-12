@@ -18,13 +18,16 @@ use multicad_rust_kernel::{
 };
 
 mod authored;
+mod identity;
 
 pub(crate) struct SplineSweepBody {
     pub(super) feature: EntityId,
     pub(super) sweep: Sweep,
     wall_areas: Vec<f64>,
+    wall_offsets: Vec<usize>,
     wall_origins: Vec<Vec<Origin>>,
     authored: Option<AuthoredFrames>,
+    opaque_caps: Option<[Origin; 2]>,
 }
 
 struct AuthoredFrames {
@@ -34,6 +37,11 @@ struct AuthoredFrames {
 }
 
 impl Solid {
+    /// Authoritative retained source loops and their current solid placement.
+    pub fn rust_spline_sweep_data(&self) -> Option<(&Sweep, PlaneFrame)> {
+        self.spline_sweep_body()
+            .map(|(body, frame)| (&body.sweep, frame))
+    }
     pub(crate) fn spline_sweep_body(&self) -> Option<(&SplineSweepBody, PlaneFrame)> {
         if let SolidBody::SplineSweep(body, frame) = &self.body {
             Some((body, *frame))
@@ -60,8 +68,7 @@ impl SplineSweepBody {
         checkpoint: crate::spline_edits::QueryCheckpoint<'_>,
     ) -> Result<Self, GeometryError> {
         let wall_areas = sweep
-            .outline()
-            .iter()
+            .edges()
             .map(|edge| {
                 if let Some(checkpoint) = checkpoint {
                     checkpoint()?;
@@ -85,56 +92,26 @@ impl SplineSweepBody {
                 }
                 Ok(upper * sweep.height_mm())
             })
-            .chain(
-                sweep
-                    .hole()
-                    .map(|hole| Ok(hole.length_mm() * sweep.height_mm())),
-            )
             .collect::<Result<_, GeometryError>>()?;
-        let wall_origins = sweep
-            .outline()
-            .iter()
-            .map(|edge| {
-                use super::step_import::{feature_origin, spline_control_key};
-                match edge {
-                    Edge::Cubic(cubic) => {
-                        let poles: Vec<_> = cubic
-                            .poles()
-                            .iter()
-                            .map(|&point| frame.point(point))
-                            .collect();
-                        let key = spline_control_key(&poles, cubic.knots());
-                        feature_origin(feature, "cubic-wall", key.into_iter().map(f64::from_bits))
-                    }
-                    Edge::Analytic(edge) => {
-                        let [a, middle, b] = [0., 0.5, 1.].map(|t| frame.point(edge.point(t)));
-                        let ends = if a < b { [a, b] } else { [b, a] };
-                        feature_origin(
-                            feature,
-                            "spline-sweep-wall",
-                            ends.into_iter().chain([middle]).flatten(),
-                        )
-                    }
-                }
+        let wall_origins = identity::walls(feature, &sweep, frame);
+        let mut count = 0;
+        let wall_offsets = sweep
+            .rings()
+            .map(|ring| {
+                let offset = count;
+                count += ring.len();
+                offset
             })
-            .chain(sweep.hole().map(|hole| {
-                super::step_import::feature_origin(
-                    feature,
-                    "spline-bore",
-                    frame
-                        .point(hole.centroid())
-                        .into_iter()
-                        .chain(hole.radius_mm()),
-                )
-            }))
-            .map(|origin| vec![origin])
             .collect();
+        let opaque_caps = Some(identity::caps(feature, &sweep, frame));
         Ok(Self {
             feature,
             sweep,
             wall_areas,
+            wall_offsets,
             wall_origins,
             authored: None,
+            opaque_caps,
         })
     }
 
@@ -147,6 +124,9 @@ impl SplineSweepBody {
         }
     }
 
+    pub(crate) fn legacy_drawing_rims_supported(&self) -> bool {
+        self.sweep.holes().is_empty() || self.sweep.hole().is_some()
+    }
     pub(crate) fn axial_drawing_rims(
         &self,
         frame: PlaneFrame,
@@ -217,19 +197,13 @@ impl SplineSweepBody {
             center_mm: position(frame, [x, y, middle]),
             area_mm2: self.wall_areas[index],
         };
-        let outline = self.sweep.outline();
-        caps.chain(outline.iter().enumerate().map(|(i, edge)| {
+        caps.chain(self.sweep.edges().enumerate().map(|(i, edge)| {
             let center = match edge {
                 Edge::Analytic(edge) => edge.centroid(),
                 Edge::Cubic(_) => edge.point(0.5),
             };
             wall(i, center, Self::side_plane(frame, edge))
         }))
-        .chain(
-            self.sweep
-                .hole()
-                .map(|hole| wall(outline.len(), hole.centroid(), None)),
-        )
         .collect()
     }
 
@@ -258,16 +232,18 @@ impl SplineSweepBody {
         owner: EntityId,
         revision: u64,
     ) -> TopologySnapshot {
-        let outline = self.sweep.outline();
-        let count = outline.len();
         let wall_count = self.wall_areas.len();
-        let origins = ["cap.start".into(), "cap.end".into()]
+        let origins = ["cap.start", "cap.end"]
             .into_iter()
-            .map(|role| {
-                vec![Origin {
-                    source: self.feature,
-                    role,
-                }]
+            .enumerate()
+            .map(|(index, role)| {
+                vec![self.opaque_caps.as_ref().map_or_else(
+                    || Origin {
+                        source: self.feature,
+                        role: role.into(),
+                    },
+                    |caps| caps[index].clone(),
+                )]
             })
             .chain(self.wall_origins.iter().cloned())
             .collect();
@@ -294,78 +270,89 @@ impl SplineSweepBody {
                 ..cap
             };
             build.face(cap_index, Some(outward), Some(anchor), 2..wall_count + 2);
-            for (index, edge) in outline.iter().enumerate() {
-                let incident = [cap_index, index + 2];
-                match edge {
-                    Edge::Analytic(edge) => {
-                        build.non_face(normal_sweep_body::rim_in_frame(*edge, cap), &incident)
+            let mut offset = 0;
+            for ring in self.sweep.rings() {
+                let circle = matches!(ring, [Edge::Analytic(AnalyticEdge::Circle { .. })]);
+                for (i, edge) in ring.iter().enumerate() {
+                    let index = offset + i;
+                    let incident = [cap_index, index + 2];
+                    match edge {
+                        Edge::Analytic(edge) => {
+                            let rim = if circle && let Some(authored) = &self.authored {
+                                let AnalyticEdge::Circle {
+                                    center, radius_mm, ..
+                                } = *edge
+                                else {
+                                    unreachable!("circle ring")
+                                };
+                                normal_sweep_body::rim_in_frame(
+                                    AnalyticEdge::Circle {
+                                        center: [
+                                            center[0],
+                                            if authored.reverse {
+                                                -center[1]
+                                            } else {
+                                                center[1]
+                                            },
+                                        ],
+                                        radius_mm,
+                                        clockwise: false,
+                                    },
+                                    ReferenceFrame {
+                                        v: cap.v.map(|v| if authored.reverse { -v } else { v }),
+                                        ..cap
+                                    },
+                                )
+                            } else {
+                                normal_sweep_body::rim_in_frame(*edge, cap)
+                            };
+                            build.non_face(rim, &incident);
+                        }
+                        Edge::Cubic(_) => build.non_analytic_edge(&incident),
                     }
-                    Edge::Cubic(_) => build.non_analytic_edge(&incident),
+                    if !circle {
+                        let [x, y] = edge.point(0.);
+                        let previous = offset + (i + ring.len() - 1) % ring.len();
+                        build.non_face(
+                            AnalyticGeometry::Point {
+                                position_mm: position(
+                                    frame,
+                                    [x, y, if top { self.sweep.height_mm() } else { 0. }],
+                                ),
+                            },
+                            &[cap_index, previous + 2, index + 2],
+                        );
+                    }
                 }
-                let [x, y] = edge.point(0.);
-                let previous = (index + count - 1) % count;
-                build.non_face(
-                    AnalyticGeometry::Point {
-                        position_mm: position(
-                            frame,
-                            [x, y, if top { self.sweep.height_mm() } else { 0. }],
-                        ),
-                    },
-                    &[cap_index, previous + 2, index + 2],
-                );
-            }
-            if let Some(hole) = self.sweep.hole() {
-                let rim = if let Some(authored) = &self.authored {
-                    let AnalyticEdge::Circle {
-                        center, radius_mm, ..
-                    } = hole
-                    else {
-                        unreachable!("certified circular hole");
-                    };
-                    normal_sweep_body::rim_in_frame(
-                        AnalyticEdge::Circle {
-                            center: [
-                                center[0],
-                                if authored.reverse {
-                                    -center[1]
-                                } else {
-                                    center[1]
-                                },
-                            ],
-                            radius_mm,
-                            clockwise: false,
-                        },
-                        ReferenceFrame {
-                            v: cap.v.map(|v| if authored.reverse { -v } else { v }),
-                            ..cap
-                        },
-                    )
-                } else {
-                    normal_sweep_body::rim_in_frame(hole, cap)
-                };
-                build.non_face(rim, &[cap_index, count + 2]);
+                offset += ring.len();
             }
         }
-        for (index, edge) in outline.iter().enumerate() {
-            let wall = index + 2;
-            let previous = (index + count - 1) % count + 2;
-            let next = (index + 1) % count + 2;
-            let plane = Self::side_plane(frame, edge);
-            let anchor = self.authored.as_ref().map_or(plane, |authored| {
-                authored.walls[index].map(|anchor| place_frame(frame, anchor))
-            });
-            build.face(wall, plane, anchor, [0, 1, previous, next]);
-            let [x, y] = edge.point(0.);
-            build.non_face(
-                AnalyticGeometry::Line {
-                    a_mm: position(frame, [x, y, 0.]),
-                    b_mm: position(frame, [x, y, self.sweep.height_mm()]),
-                },
-                &[previous, wall],
-            );
-        }
-        if self.sweep.hole().is_some() {
-            build.face(count + 2, None, None, [0, 1]);
+        let mut offset = 0;
+        for ring in self.sweep.rings() {
+            if matches!(ring, [Edge::Analytic(AnalyticEdge::Circle { .. })]) {
+                build.face(offset + 2, None, None, [0, 1]);
+            } else {
+                for (i, edge) in ring.iter().enumerate() {
+                    let index = offset + i;
+                    let wall = index + 2;
+                    let previous = offset + (i + ring.len() - 1) % ring.len() + 2;
+                    let next = offset + (i + 1) % ring.len() + 2;
+                    let plane = Self::side_plane(frame, edge);
+                    let anchor = self.authored.as_ref().map_or(plane, |authored| {
+                        authored.walls[index].map(|anchor| place_frame(frame, anchor))
+                    });
+                    build.face(wall, plane, anchor, [0, 1, previous, next]);
+                    let [x, y] = edge.point(0.);
+                    build.non_face(
+                        AnalyticGeometry::Line {
+                            a_mm: position(frame, [x, y, 0.]),
+                            b_mm: position(frame, [x, y, self.sweep.height_mm()]),
+                        },
+                        &[previous, wall],
+                    );
+                }
+            }
+            offset += ring.len();
         }
         TopologySnapshot {
             owner,
@@ -395,7 +382,7 @@ impl SplineSweepBody {
         starts.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
         let mut used = vec![false; readback.len()];
         let mut count = 0;
-        for cubic in self.sweep.outline().iter().filter_map(|edge| match edge {
+        for cubic in self.sweep.edges().filter_map(|edge| match edge {
             Edge::Cubic(cubic) => Some(cubic),
             Edge::Analytic(_) => None,
         }) {
@@ -447,7 +434,14 @@ impl SplineSweepBody {
     ) -> Option<Result<Vec<[f64; 3]>, MeshError>> {
         let stride = self.wall_areas.len();
         let index = ordinal as usize;
-        let edge = self.sweep.outline().get(index % stride)?;
+        let wall = index % stride;
+        let ring = self.wall_offsets.partition_point(|&offset| offset <= wall) - 1;
+        let edges = if ring == 0 {
+            self.sweep.outline()
+        } else {
+            &self.sweep.holes()[ring - 1]
+        };
+        let edge = edges.get(wall - self.wall_offsets[ring])?;
         if index >= 2 * stride || !matches!(edge, Edge::Cubic(_)) {
             return None;
         }

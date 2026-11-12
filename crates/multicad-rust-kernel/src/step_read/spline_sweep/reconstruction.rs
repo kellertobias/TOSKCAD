@@ -44,30 +44,71 @@ fn reconstruct(
     }
     let u = base.u;
     let v = base.v.map(|value| -value);
-    let project = |point| {
-        let relative = sub(point, base.origin);
-        [dot(relative, u), dot(relative, v)]
+    let section_plane = Plane {
+        origin: base.origin,
+        u,
+        v,
+        normal: axis,
     };
-    // The lower cap is outward facing. Reverse its traversals for the
-    // positive sweep frame and retain the source pole and knot order.
-    let outline = low
-        .outer
+    let outline = section_edges(reader, edges, &section_plane, &low.outer, true)?;
+    let holes = low
+        .holes
         .iter()
-        .rev()
-        .map(|edge| {
-            let [a, b] = [edge.end, edge.start].map(|id| project(reader.points[&id]));
-            let direction = !edge.forward;
+        .map(|ring| section_edges(reader, edges, &section_plane, ring, true))
+        .collect::<Result<Vec<_>>>()?;
+    let sweep = spline_sweep::Sweep::from_verified_rings(outline, holes, height, reader.tolerance)
+        .map_err(body_error)?;
+    Ok(DecodedSplineSweep {
+        origin_mm: base.origin,
+        u,
+        v,
+        sweep,
+    })
+}
+
+pub(super) fn section_edges(
+    reader: &Shell<'_, '_>,
+    edges: &Edges,
+    plane: &Plane,
+    ring: &[Traversal],
+    reverse: bool,
+) -> Result<Vec<spline_sweep::Edge>> {
+    let project = |point| {
+        let relative = sub(point, plane.origin);
+        [dot(relative, plane.u), dot(relative, plane.v)]
+    };
+    (0..ring.len())
+        .map(|i| {
+            let edge = &ring[if reverse { ring.len() - 1 - i } else { i }];
+            let [start, end] = if reverse {
+                [edge.end, edge.start]
+            } else {
+                [edge.start, edge.end]
+            };
+            let a = project(*reader.points.get(&start).ok_or(ReadError::Invalid)?);
+            let b = project(*reader.points.get(&end).ok_or(ReadError::Invalid)?);
+            let direction = edge.forward != reverse;
             Ok(match &edges[&edge.edge].geometry {
                 Geometry::Analytic(Curve::Line) => {
                     spline_sweep::Edge::Analytic(normal_sweep::Edge::Line { a, b })
                 }
                 Geometry::Analytic(curve) => {
                     let round = round_geometry(*curve).ok_or(ReadError::Invalid)?;
-                    spline_sweep::Edge::Analytic(normal_sweep::Edge::Arc {
-                        center: project(round.center),
-                        a,
-                        b,
-                        clockwise: (dot(round.normal, axis) > 0.) != direction,
+                    let center = project(round.center);
+                    let clockwise = (dot(round.normal, plane.normal) > 0.) != direction;
+                    spline_sweep::Edge::Analytic(if round.full {
+                        normal_sweep::Edge::Circle {
+                            center,
+                            radius_mm: round.radius,
+                            clockwise,
+                        }
+                    } else {
+                        normal_sweep::Edge::Arc {
+                            center,
+                            a,
+                            b,
+                            clockwise,
+                        }
                     })
                 }
                 Geometry::Cubic { curve, .. } => spline_sweep::Edge::Cubic(
@@ -80,30 +121,7 @@ fn reconstruct(
                 ),
             })
         })
-        .collect::<Result<Vec<_>>>()?;
-    let hole = low
-        .hole
-        .as_ref()
-        .map(|hole| {
-            // Section verification allows only a singleton full circular hole.
-            let Geometry::Analytic(Curve::Circle(circle)) = edges[&hole[0].edge].geometry else {
-                return Err(ReadError::Invalid);
-            };
-            Ok(normal_sweep::Edge::Circle {
-                center: project(circle.center_mm),
-                radius_mm: circle.radius_mm,
-                clockwise: true,
-            })
-        })
-        .transpose()?;
-    let sweep = spline_sweep::Sweep::from_verified(outline, hole, height, reader.tolerance)
-        .map_err(body_error)?;
-    Ok(DecodedSplineSweep {
-        origin_mm: base.origin,
-        u,
-        v,
-        sweep,
-    })
+        .collect()
 }
 
 fn body_error(error: spline_sweep::Error) -> ReadError {
@@ -138,7 +156,7 @@ mod tests {
             surface: 0,
             forward: true,
             outer: vec![],
-            hole: Some(vec![trim]),
+            holes: vec![vec![trim]],
         };
         let edges = BTreeMap::from([(
             1,

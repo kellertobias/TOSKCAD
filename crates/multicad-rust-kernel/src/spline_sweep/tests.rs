@@ -457,3 +457,206 @@ fn authored_section_refuses_invalid_uncertain_and_cancelled_work_atomically() {
     );
     assert!(Sweep::new(source, None, 3., TOLERANCE).is_ok());
 }
+
+#[test]
+fn authored_multiple_counter_loops_keep_material_winding_and_closed_mesh() {
+    let square = vec![
+        line([0.5, 0.5], [0.5, 1.]),
+        line([0.5, 1.], [1., 1.]),
+        line([1., 1.], [1., 0.5]),
+        line([1., 0.5], [0.5, 0.5]),
+    ];
+    let circle = vec![Edge::Analytic(normal_sweep::Edge::Circle {
+        center: [3., 1.],
+        radius_mm: 0.2,
+        clockwise: true,
+    })];
+    let holes = vec![square, circle];
+    let sweep = Sweep::new_rings(
+        vec![
+            line([0., 0.], [4., 0.]),
+            line([4., 0.], [4., 3.]),
+            line([4., 3.], [0., 3.]),
+            line([0., 3.], [0., 0.]),
+        ],
+        holes.clone(),
+        3.,
+        TOLERANCE,
+    )
+    .unwrap();
+    let area = 12. - 0.25 - std::f64::consts::PI * 0.04;
+    close(sweep.area_mm2(), area, 1e-12);
+    close(sweep.volume_mm3(), area * 3., 1e-12);
+    assert_eq!(sweep.holes(), holes);
+    assert_eq!(sweep.edges().count(), 9);
+    let mesh = sweep.mesh(OPTIONS).unwrap();
+    let proof = certify(&mesh).unwrap();
+    close(proof.signed_volume_mm3, area * 3., 0.05);
+    assert_eq!(mesh.face_indices.iter().max(), Some(&10));
+}
+
+fn subdivided_profile() -> Vec<Edge> {
+    fn split([a, b, c, d]: [Point; 4]) -> [[Point; 4]; 2] {
+        let midpoint = |a: Point, b: Point| std::array::from_fn(|i| (a[i] + b[i]) / 2.);
+        let [ab, bc, cd] = [midpoint(a, b), midpoint(b, c), midpoint(c, d)];
+        let [x, y] = [midpoint(ab, bc), midpoint(bc, cd)];
+        let m = midpoint(x, y);
+        [[a, ab, x, m], [m, y, cd, d]]
+    }
+    let poles: [Point; 4] = parabola().poles().try_into().unwrap();
+    let mut result = vec![line([0., 0.], [4., 0.]), line([4., 0.], [4., 2.])];
+    result.extend(
+        split(poles)
+            .into_iter()
+            .flat_map(split)
+            .map(|p| Edge::Cubic(Cubic::new(p.to_vec(), vec![0., 1.], false).unwrap())),
+    );
+    result.push(line([0., 2.], [0., 0.]));
+    result
+}
+fn counter_square(x: f64, y: f64, size: f64) -> Vec<Edge> {
+    let points = [[x, y], [x, y + size], [x + size, y + size], [x + size, y]];
+    (0..4)
+        .map(|i| line(points[i], points[(i + 1) % 4]))
+        .collect()
+}
+
+#[test]
+fn multi_counter_source_curves_survive_placed_step_reconstruction() {
+    let circle = vec![Edge::Analytic(normal_sweep::Edge::Circle {
+        center: [3., 1.],
+        radius_mm: 0.2,
+        clockwise: true,
+    })];
+    for (holes, area) in [
+        (
+            vec![counter_square(0.5, 0.5, 0.5), counter_square(2.5, 0.5, 0.5)],
+            9.5,
+        ),
+        (
+            vec![counter_square(0.5, 0.5, 0.5), circle],
+            9.75 - std::f64::consts::PI * 0.04,
+        ),
+        (vec![counter_square(0.5, 0.5, 0.5)], 9.75),
+    ] {
+        let count = holes.len();
+        let sweep = Sweep::new_rings(subdivided_profile(), holes, 3., TOLERANCE).unwrap();
+        close(sweep.area_mm2(), area, 1e-12);
+        for [origin, u, v] in [
+            [[0.; 3], [1., 0., 0.], [0., 1., 0.]],
+            [[80., 60., 20.], [0.8, 0.6, 0.], [-0.36, 0.48, 0.8]],
+        ] {
+            let source = step::write_spline_sweep(&sweep, origin, u, v, TOLERANCE).unwrap();
+            let (readback, import) = read_import_solid(&source, TOLERANCE).unwrap();
+            close(readback.volume_mm3, area * 3., 1e-8);
+            let ImportProfile::SplineSweep { sweep: loaded } = import.profile else {
+                panic!()
+            };
+            assert_eq!(loaded.holes().len(), count);
+            close(loaded.area_mm2(), area, 1e-10);
+            let again =
+                step::write_spline_sweep(&loaded, import.origin_mm, import.u, import.v, TOLERANCE)
+                    .unwrap();
+            close(
+                read_import_solid(&again, TOLERANCE).unwrap().0.volume_mm3,
+                area * 3.,
+                1e-8,
+            );
+        }
+    }
+}
+
+#[test]
+fn multiple_counter_proof_rejects_invalid_material_and_is_cooperatively_bounded() {
+    let valid = vec![counter_square(0.5, 0.5, 0.5), counter_square(2.5, 0.5, 0.5)];
+    for holes in [
+        vec![Vec::new()],
+        vec![counter_square(8., 8., 0.5)],
+        vec![counter_square(0., 0., 10.)],
+        vec![
+            counter_square(0.5, 0.5, 1.),
+            counter_square(0.75, 0.75, 0.25),
+        ],
+        {
+            let mut ring = counter_square(0.5, 0.5, 0.5);
+            ring.reverse();
+            ring = ring
+                .into_iter()
+                .map(|edge| match edge {
+                    Edge::Analytic(edge) => Edge::Analytic(edge.reversed()),
+                    _ => unreachable!(),
+                })
+                .collect();
+            vec![ring]
+        },
+    ] {
+        assert!(matches!(
+            Sweep::new_rings(subdivided_profile(), holes, 3., TOLERANCE),
+            Err(ConstructionError::Invalid)
+        ));
+    }
+    for holes in [
+        vec![counter_square(0.5, 0.5, 0.5); 2],
+        vec![counter_square(0.5, 0.5, 0.5), counter_square(1., 0.5, 0.5)],
+    ] {
+        assert_eq!(
+            Sweep::new_rings(subdivided_profile(), holes, 3., TOLERANCE),
+            Err(ConstructionError::Unresolved)
+        );
+    }
+    let single =
+        Sweep::new_rings(subdivided_profile(), vec![valid[0].clone()], 3., TOLERANCE).unwrap();
+    assert_eq!(single.hole(), None);
+    assert_eq!(single.holes().len(), 1);
+    let count = std::cell::Cell::new(0usize);
+    let observe = || {
+        count.set(count.get() + 1);
+        false
+    };
+    Sweep::new_rings_with_interrupt(
+        subdivided_profile(),
+        valid.clone(),
+        3.,
+        TOLERANCE,
+        Some(&observe),
+    )
+    .unwrap();
+    for stop in 0..count.get() {
+        let calls = std::cell::Cell::new(0usize);
+        let cancel = || {
+            let old = calls.get();
+            calls.set(old + 1);
+            old == stop
+        };
+        assert_eq!(
+            Sweep::new_rings_with_interrupt(
+                subdivided_profile(),
+                valid.clone(),
+                3.,
+                TOLERANCE,
+                Some(&cancel)
+            ),
+            Err(ConstructionError::Cancelled)
+        );
+    }
+    Sweep::new_rings(subdivided_profile(), valid, 3., TOLERANCE).unwrap();
+    let outer = vec![
+        line([0., 0.], [100., 0.]),
+        line([100., 0.], [100., 100.]),
+        line([100., 100.], [0., 100.]),
+        line([0., 100.], [0., 0.]),
+    ];
+    let many = (0..512)
+        .map(|i| {
+            vec![Edge::Analytic(normal_sweep::Edge::Circle {
+                center: [1. + 2. * (i % 32) as f64, 1. + 2. * (i / 32) as f64],
+                radius_mm: 0.1,
+                clockwise: true,
+            })]
+        })
+        .collect();
+    assert_eq!(
+        Sweep::new_rings(outer, many, 3., TOLERANCE),
+        Err(ConstructionError::Limit)
+    );
+}

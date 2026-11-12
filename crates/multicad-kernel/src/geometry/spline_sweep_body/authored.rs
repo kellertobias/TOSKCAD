@@ -110,28 +110,22 @@ impl Solid {
         policy.validate()?;
         profile.frame.checked(policy)?;
         policy.length(height_mm.abs())?;
-        if profile.outer.len() > 1024 {
+        if profile.outer.len() + profile.holes.iter().map(Vec::len).sum::<usize>() > 1024 {
             return Err(failure(
                 GeometryErrorKind::Limit,
                 "Authored spline extrusion exceeds its certified source edge budget",
             ));
         }
-        if profile.outer.is_empty()
-            || profile.holes.len() > 1
-            || profile
-                .holes
-                .iter()
-                .any(|hole| !matches!(hole.as_slice(), [CurvedEdge2d::Circle { .. }]))
-        {
+        if profile.outer.is_empty() || profile.holes.iter().any(Vec::is_empty) {
             return Err(failure(
-                GeometryErrorKind::Unsupported,
-                "Authored spline extrusion requires one exterior and at most one circular hole",
+                GeometryErrorKind::Input,
+                "Authored spline extrusion requires nonempty closed boundary loops",
             ));
         }
         super::super::construction::validate_origins(
             feature,
             origins,
-            profile.outer.len() + profile.holes.len(),
+            profile.outer.len() + profile.holes.iter().map(Vec::len).sum::<usize>(),
         )?;
         for edge in profile.outer.iter().chain(profile.holes.iter().flatten()) {
             cancelled(interrupt)?;
@@ -158,8 +152,20 @@ impl Solid {
         }
         let negative = height_mm < 0.;
         let reflect = |[x, y]: [f64; 2]| [x, if negative { -y } else { y }];
-        let source: Vec<_> = profile
-            .outer
+        let rings: Vec<_> = std::iter::once(&profile.outer)
+            .chain(&profile.holes)
+            .collect();
+        let curves: Vec<_> = rings.iter().flat_map(|ring| ring.iter()).collect();
+        let mut offset = 0;
+        let ranges: Vec<_> = rings
+            .iter()
+            .map(|ring| {
+                let start = offset;
+                offset += ring.len();
+                start..offset
+            })
+            .collect();
+        let source: Vec<_> = curves
             .iter()
             .zip(origins)
             .map(|(edge, origin)| RegionEdge {
@@ -190,16 +196,20 @@ impl Solid {
                     "Authored spline outline intersects itself",
                 ));
             }
+            let range = ranges
+                .iter()
+                .find(|range| range.contains(&index))
+                .expect("source ring range");
             for (other, earlier) in source[..index].iter().enumerate() {
                 cancelled(interrupt)?;
                 let mut joins = Vec::new();
-                if other + 1 == index {
-                    let curve = &profile.outer[other];
+                if range.contains(&other) && other + 1 == index {
+                    let curve = curves[other];
                     let domain = curve.domain(policy)?;
                     joins.push(curve.evaluate(domain[1], policy)?.point);
                 }
-                if other == 0 && index + 1 == source.len() {
-                    let curve = &profile.outer[0];
+                if other == range.start && index + 1 == range.end {
+                    let curve = curves[range.start];
                     let domain = curve.domain(policy)?;
                     joins.push(curve.evaluate(domain[0], policy)?.point);
                 }
@@ -226,62 +236,84 @@ impl Solid {
                 }
             }
         }
-        let area =
-            crate::sketch_queries::spline_regions::signed_area(&source, policy, Some(&checkpoint))
-                .map_err(query_error)?;
-        let reverse = (area > 0.) == negative;
-        let hole = profile.holes.first().map(|hole| {
-            let [CurvedEdge2d::Circle { center, radius_mm }] = hole.as_slice() else {
-                unreachable!("validated circular hole");
-            };
-            AnalyticEdge::Circle {
-                center: reflect(*center),
-                radius_mm: *radius_mm,
-                clockwise: true,
-            }
-        });
+        let areas = ranges
+            .iter()
+            .map(|range| {
+                crate::sketch_queries::spline_regions::signed_area(
+                    &source[range.clone()],
+                    policy,
+                    Some(&checkpoint),
+                )
+                .map_err(query_error)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         for depth in 2..=8 {
             cancelled(interrupt)?;
             let mut edges = Vec::new();
-            for (curve, origin) in profile.outer.iter().zip(origins) {
-                cancelled(interrupt)?;
-                match curve {
-                    CurvedEdge2d::BSpline(spline) if spline.degree > 1 => {
-                        for patch in crate::spline_edits::regions::polynomial_patches(
-                            spline,
-                            depth,
-                            policy,
-                            Some(&checkpoint),
-                        )? {
-                            let cubic = Cubic::new(
-                                patch.poles.into_iter().map(reflect).collect(),
-                                vec![0., 1.],
-                                false,
-                            )
-                            .map_err(|cause| {
-                                failure(
-                                    GeometryErrorKind::Unsupported,
-                                    format!("Cannot retain an authored spline span: {cause:?}"),
+            let mut sections = Vec::new();
+            for (ring_index, range) in ranges.iter().enumerate() {
+                let reverse = if ring_index == 0 {
+                    (areas[ring_index] > 0.) == negative
+                } else {
+                    (areas[ring_index] > 0.) != negative
+                };
+                let mut ring_edges = Vec::new();
+                for (curve, origin) in rings[ring_index].iter().zip(&origins[range.clone()]) {
+                    cancelled(interrupt)?;
+                    match curve {
+                        CurvedEdge2d::BSpline(spline) if spline.degree > 1 => {
+                            for patch in crate::spline_edits::regions::polynomial_patches(
+                                spline,
+                                depth,
+                                policy,
+                                Some(&checkpoint),
+                            )? {
+                                let cubic = Cubic::new(
+                                    patch.poles.into_iter().map(reflect).collect(),
+                                    vec![0., 1.],
+                                    false,
                                 )
-                            })?;
-                            edges.push(AuthoredEdge {
-                                edge: Edge::Cubic(cubic),
-                                origins: aliases(feature, origin),
-                                anchor: None,
-                                fragment: true,
-                            });
+                                .map_err(|cause| {
+                                    failure(
+                                        GeometryErrorKind::Unsupported,
+                                        format!("Cannot retain an authored spline span: {cause:?}"),
+                                    )
+                                })?;
+                                ring_edges.push(AuthoredEdge {
+                                    edge: Edge::Cubic(cubic),
+                                    origins: aliases(feature, origin),
+                                    anchor: None,
+                                    fragment: true,
+                                });
+                            }
                         }
-                    }
-                    CurvedEdge2d::BSpline(spline) => {
-                        for pair in spline.poles.windows(2) {
-                            let [a, b] = [reflect(pair[0]), reflect(pair[1])];
+                        CurvedEdge2d::BSpline(spline) => {
+                            for pair in spline.poles.windows(2) {
+                                let [a, b] = [reflect(pair[0]), reflect(pair[1])];
+                                let delta = [b[0] - a[0], b[1] - a[1]];
+                                let length = delta[0].hypot(delta[1]);
+                                policy.length(length)?;
+                                ring_edges.push(AuthoredEdge {
+                                    edge: Edge::Analytic(AnalyticEdge::Line { a, b }),
+                                    fragment: spline.poles.len() > 2,
+                                    origins: aliases(feature, origin),
+                                    anchor: Some(ReferenceFrame {
+                                        origin_mm: [a[0], a[1], 0.],
+                                        u: [delta[0] / length, delta[1] / length, 0.],
+                                        v: [0., 0., 1.],
+                                    }),
+                                });
+                            }
+                        }
+                        CurvedEdge2d::Line { a, b } => {
+                            let [a, b] = [reflect(*a), reflect(*b)];
                             let delta = [b[0] - a[0], b[1] - a[1]];
                             let length = delta[0].hypot(delta[1]);
                             policy.length(length)?;
-                            edges.push(AuthoredEdge {
+                            ring_edges.push(AuthoredEdge {
                                 edge: Edge::Analytic(AnalyticEdge::Line { a, b }),
-                                fragment: spline.poles.len() > 2,
                                 origins: aliases(feature, origin),
+                                fragment: false,
                                 anchor: Some(ReferenceFrame {
                                     origin_mm: [a[0], a[1], 0.],
                                     u: [delta[0] / length, delta[1] / length, 0.],
@@ -289,92 +321,96 @@ impl Solid {
                                 }),
                             });
                         }
-                    }
-                    CurvedEdge2d::Line { a, b } => {
-                        let [a, b] = [reflect(*a), reflect(*b)];
-                        let delta = [b[0] - a[0], b[1] - a[1]];
-                        let length = delta[0].hypot(delta[1]);
-                        policy.length(length)?;
-                        edges.push(AuthoredEdge {
-                            edge: Edge::Analytic(AnalyticEdge::Line { a, b }),
+                        CurvedEdge2d::Arc {
+                            center,
+                            a,
+                            b,
+                            clockwise,
+                        } => ring_edges.push(AuthoredEdge {
+                            edge: Edge::Analytic(AnalyticEdge::Arc {
+                                center: reflect(*center),
+                                a: reflect(*a),
+                                b: reflect(*b),
+                                clockwise: *clockwise != negative,
+                            }),
                             origins: aliases(feature, origin),
                             fragment: false,
-                            anchor: Some(ReferenceFrame {
-                                origin_mm: [a[0], a[1], 0.],
-                                u: [delta[0] / length, delta[1] / length, 0.],
-                                v: [0., 0., 1.],
-                            }),
-                        });
-                    }
-                    CurvedEdge2d::Arc {
-                        center,
-                        a,
-                        b,
-                        clockwise,
-                    } => edges.push(AuthoredEdge {
-                        edge: Edge::Analytic(AnalyticEdge::Arc {
-                            center: reflect(*center),
-                            a: reflect(*a),
-                            b: reflect(*b),
-                            clockwise: *clockwise != negative,
+                            anchor: None,
                         }),
-                        origins: aliases(feature, origin),
-                        fragment: false,
-                        anchor: None,
-                    }),
-                    CurvedEdge2d::Circle { .. } => {
-                        return Err(failure(
-                            GeometryErrorKind::Unsupported,
-                            "A full circular exterior cannot share a spline outline",
-                        ));
+                        CurvedEdge2d::Circle { center, radius_mm } => {
+                            if ring_index == 0 || rings[ring_index].len() != 1 {
+                                return Err(failure(
+                                    GeometryErrorKind::Unsupported,
+                                    "A full circle must form an entire inner boundary",
+                                ));
+                            }
+                            ring_edges.push(AuthoredEdge {
+                                edge: Edge::Analytic(AnalyticEdge::Circle {
+                                    center: reflect(*center),
+                                    radius_mm: *radius_mm,
+                                    clockwise: negative,
+                                }),
+                                origins: aliases(feature, origin),
+                                anchor: None,
+                                fragment: false,
+                            });
+                        }
                     }
                 }
-            }
-            if edges.len() > 1024 {
-                return Err(failure(
-                    GeometryErrorKind::Limit,
-                    "Authored spline extrusion exceeds its certified span budget",
-                ));
-            }
-            if reverse {
-                edges.reverse();
-                for item in &mut edges {
-                    item.edge = match &item.edge {
-                        Edge::Analytic(edge) => Edge::Analytic(edge.reversed()),
-                        Edge::Cubic(cubic) => Edge::Cubic(
-                            Cubic::new(
-                                cubic.poles().to_vec(),
-                                cubic.knots().to_vec(),
-                                !cubic.reversed(),
-                            )
-                            .expect("retained source cubic"),
-                        ),
-                    };
+                if ring_edges.len() > 1024 {
+                    return Err(failure(
+                        GeometryErrorKind::Limit,
+                        "Authored spline extrusion exceeds its certified span budget",
+                    ));
                 }
-            }
-            for item in &mut edges {
-                if item.fragment {
-                    let points = match &item.edge {
-                        Edge::Cubic(cubic) => {
-                            let mut points = cubic.poles().to_vec();
-                            if cubic.reversed() {
-                                points.reverse();
+                if reverse {
+                    ring_edges.reverse();
+                    for item in &mut ring_edges {
+                        item.edge = match &item.edge {
+                            Edge::Analytic(edge) => Edge::Analytic(edge.reversed()),
+                            Edge::Cubic(cubic) => Edge::Cubic(
+                                Cubic::new(
+                                    cubic.poles().to_vec(),
+                                    cubic.knots().to_vec(),
+                                    !cubic.reversed(),
+                                )
+                                .expect("retained source cubic"),
+                            ),
+                        };
+                    }
+                }
+                for item in &mut ring_edges {
+                    if item.fragment {
+                        let points = match &item.edge {
+                            Edge::Cubic(cubic) => {
+                                let mut points = cubic.poles().to_vec();
+                                if cubic.reversed() {
+                                    points.reverse();
+                                }
+                                points.into_iter().map(reflect).collect::<Vec<_>>()
                             }
-                            points.into_iter().map(reflect).collect::<Vec<_>>()
-                        }
-                        Edge::Analytic(edge) => {
-                            vec![reflect(edge.point(0.)), reflect(edge.point(1.))]
-                        }
-                    };
-                    item.origins
-                        .push(finite_trim(feature, &item.origins[1], &points));
+                            Edge::Analytic(edge) => {
+                                vec![reflect(edge.point(0.)), reflect(edge.point(1.))]
+                            }
+                        };
+                        item.origins
+                            .push(finite_trim(feature, &item.origins[1], &points));
+                    }
+                }
+                sections.push(ring_edges.iter().map(|edge| edge.edge.clone()).collect());
+                edges.extend(ring_edges);
+                if edges.len() > 1024 {
+                    return Err(failure(
+                        GeometryErrorKind::Limit,
+                        "Authored spline extrusion exceeds its certified span budget",
+                    ));
                 }
             }
-            let outline = edges.iter().map(|edge| edge.edge.clone()).collect();
+            let outline = sections.remove(0);
             let pure_interrupt = || checkpoint().is_err();
-            let result = Sweep::new_with_interrupt(
+            let result = Sweep::new_rings_with_interrupt(
                 outline,
-                hole,
+                sections,
                 height_mm.abs(),
                 policy.linear_tolerance_mm,
                 Some(&pure_interrupt),
@@ -406,27 +442,15 @@ impl Solid {
                 policy.linear_tolerance_mm,
                 Some(&checkpoint),
             )?;
-            body.wall_origins = edges
-                .iter()
-                .map(|edge| edge.origins.clone())
-                .chain(
-                    profile
-                        .holes
-                        .first()
-                        .map(|_| aliases(feature, &origins[profile.outer.len()])),
-                )
-                .collect();
+            body.opaque_caps = None;
+            body.wall_origins = edges.iter().map(|edge| edge.origins.clone()).collect();
             body.authored = Some(AuthoredFrames {
                 reverse: negative,
                 // The local L1 conversion enclosure is tolerance/128.
                 // Double it for the admitted near-unit frame's spatial
                 // operator bound before reserving the world chord budget.
                 source_error_mm: policy.linear_tolerance_mm / 64.,
-                walls: edges
-                    .into_iter()
-                    .map(|edge| edge.anchor)
-                    .chain(hole.map(|_| None))
-                    .collect(),
+                walls: edges.into_iter().map(|edge| edge.anchor).collect(),
             });
             let bounds = body.bounds(frame);
             policy.point(bounds.min)?;

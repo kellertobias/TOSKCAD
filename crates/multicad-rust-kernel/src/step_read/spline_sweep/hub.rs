@@ -134,11 +134,10 @@ fn decode_end<'a>(
     axis: Point,
     tolerance: f64,
 ) -> Result<End<'a>> {
-    let inner = |plane: &Plane, face: &'a FaceWire| {
-        face.hole
-            .as_deref()
-            .map(|ring| concentric_circle(edges, ring, plane, false, tolerance))
-            .transpose()
+    let inner = |plane: &Plane, face: &'a FaceWire| match face.holes.as_slice() {
+        [] => Ok(None),
+        [ring] => concentric_circle(edges, ring, plane, false, tolerance).map(Some),
+        _ => Err(ReadError::Unsupported),
     };
     let rim = inner(shoulder_plane, shoulder)?;
     let tooth_area = shoulder_area + rim.map_or(0., CircleTrim::area);

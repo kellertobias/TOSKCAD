@@ -454,9 +454,9 @@ fn side_check_rejects_inconsistent_supports_and_trim_incidence() {
     let extra = wall.outer.pop().unwrap();
     assert_eq!(verify(&edges, &wall, delta), Err(ReadError::Unsupported));
     wall.outer.push(extra);
-    wall.hole = Some(vec![]);
+    wall.holes = vec![vec![]];
     assert_eq!(verify(&edges, &wall, delta), Err(ReadError::Unsupported));
-    wall.hole = None;
+    wall.holes.clear();
 
     let down = wall.outer[3].edge;
     wall.outer[3].edge = wall.outer[1].edge;
@@ -480,7 +480,7 @@ fn cap_check_rejects_bad_winding_nonplanarity_and_hole_escapes() {
     let f = Fixture::new(&source);
     let (mut reader, mut edges, mut low, _, _) = cap_and_wall(&f, f.cylinders[0]);
     let plane = face_plane(&reader, &low).unwrap();
-    let hole = low.hole.as_mut().unwrap();
+    let hole = low.holes.first_mut().unwrap();
     let bore = hole[0].edge;
     let Geometry::Analytic(Curve::Circle(mut circle)) = edges[&bore].geometry else {
         panic!()
@@ -494,21 +494,21 @@ fn cap_check_rejects_bad_winding_nonplanarity_and_hole_escapes() {
     });
     assert_eq!(
         section::verify(&reader, &edges, &plane, &low),
-        Err(ReadError::Unsupported)
+        Err(ReadError::Invalid)
     );
-    low.hole.as_mut().unwrap().pop();
+    low.holes.first_mut().unwrap().pop();
     edges.get_mut(&bore).unwrap().geometry = Geometry::Analytic(Curve::Line);
-    assert_eq!(
-        section::verify(&reader, &edges, &plane, &low),
-        Err(ReadError::Unsupported)
-    );
-    edges.get_mut(&bore).unwrap().geometry = Geometry::Analytic(Curve::Circle(circle));
-    low.hole.as_mut().unwrap()[0].forward ^= true;
     assert_eq!(
         section::verify(&reader, &edges, &plane, &low),
         Err(ReadError::Invalid)
     );
-    low.hole.as_mut().unwrap()[0].forward ^= true;
+    edges.get_mut(&bore).unwrap().geometry = Geometry::Analytic(Curve::Circle(circle));
+    low.holes.first_mut().unwrap()[0].forward ^= true;
+    assert_eq!(
+        section::verify(&reader, &edges, &plane, &low),
+        Err(ReadError::Invalid)
+    );
+    low.holes.first_mut().unwrap()[0].forward ^= true;
     circle.center_mm = std::array::from_fn(|i| original.center_mm[i] + 100. * plane.u[i]);
     edges.get_mut(&bore).unwrap().geometry = Geometry::Analytic(Curve::Circle(circle));
     assert_eq!(
@@ -529,7 +529,7 @@ fn cap_check_rejects_bad_winding_nonplanarity_and_hole_escapes() {
     );
     reader.points.insert(vertex, position);
 
-    low.hole = None;
+    low.holes.clear();
     let reverse = Plane {
         normal: plane.normal.map(|v| -v),
         v: plane.v.map(|v| -v),
@@ -758,13 +758,23 @@ impl ParsedHub {
     }
 
     fn bore(&self, end: usize) -> u32 {
-        self.ends[end].as_ref().unwrap().1.hole.as_ref().unwrap()[0].edge
+        self.ends[end].as_ref().unwrap().1.holes.first().unwrap()[0].edge
     }
 }
 
 #[test]
 fn hub_requires_concentric_end_rings_outside_the_tooth_band() {
-    reject_hub(|f| f.shoulders[0].1.hole = None, ReadError::Invalid);
+    reject_hub(
+        |f| {
+            let extra = f.shoulders[0].1.holes[0]
+                .iter()
+                .map(copy_traversal)
+                .collect();
+            f.shoulders[0].1.holes.push(extra);
+        },
+        ReadError::Unsupported,
+    );
+    reject_hub(|f| f.shoulders[0].1.holes.clear(), ReadError::Invalid);
     reject_hub(|f| f.areas[1] += 1., ReadError::Invalid);
     reject_hub(
         |f| {
@@ -823,7 +833,7 @@ fn hub_requires_concentric_end_rings_outside_the_tooth_band() {
 #[test]
 fn hub_requires_exactly_one_continuous_bore_and_all_supports() {
     reject_hub(
-        |f| f.ends[1].as_mut().unwrap().1.hole = None,
+        |f| f.ends[1].as_mut().unwrap().1.holes.clear(),
         ReadError::Invalid,
     );
     reject_hub(|f| f.circle(f.bore(1)).radius_mm += 1., ReadError::Invalid);
@@ -874,4 +884,81 @@ fn hub_requires_exactly_one_continuous_bore_and_all_supports() {
         read_analytic_solid(&changed, TOL).err(),
         Some(ReadError::Invalid)
     );
+}
+
+#[test]
+fn generic_counter_caps_require_every_circle_to_be_a_separate_coplanar_bound() {
+    use crate::{
+        normal_sweep,
+        spline_sweep::{Cubic, Edge, Sweep},
+    };
+    let line = |a, b| Edge::Analytic(normal_sweep::Edge::Line { a, b });
+    let outer = vec![
+        line([0., 0.], [4., 0.]),
+        line([4., 0.], [4., 4.]),
+        Edge::Cubic(
+            Cubic::new(
+                vec![[4., 4.], [3., 4.], [1., 4.], [0., 4.]],
+                vec![0., 1.],
+                false,
+            )
+            .unwrap(),
+        ),
+        line([0., 4.], [0., 0.]),
+    ];
+    let square = vec![
+        line([0.5, 0.5], [0.5, 1.]),
+        line([0.5, 1.], [1., 1.]),
+        line([1., 1.], [1., 0.5]),
+        line([1., 0.5], [0.5, 0.5]),
+    ];
+    let circle = vec![Edge::Analytic(normal_sweep::Edge::Circle {
+        center: [3., 2.],
+        radius_mm: 0.25,
+        clockwise: true,
+    })];
+    let body = Sweep::new_rings(outer, vec![square, circle], 3., TOL).unwrap();
+    let source = crate::step::write_spline_sweep(&body, ORIGIN, U, V, TOL).unwrap();
+    let f = Fixture::new(&source);
+    let (reader, mut edges, mut low, _, _) = cap_and_wall(&f, f.cylinders[0]);
+    let plane = face_plane(&reader, &low).unwrap();
+    assert!(
+        (section::verify(&reader, &edges, &plane, &low).unwrap() - body.area_mm2()).abs() < 1e-8
+    );
+    let hole = low.holes.iter().position(|ring| ring.len() == 1).unwrap();
+    let edge = low.holes[hole][0].edge;
+    let Geometry::Analytic(Curve::Circle(original)) = edges[&edge].geometry else {
+        panic!()
+    };
+    let mut changed = original;
+    changed.center_mm = std::array::from_fn(|i| original.center_mm[i] + plane.normal[i] * 0.005);
+    edges.get_mut(&edge).unwrap().geometry = Geometry::Analytic(Curve::Circle(changed));
+    assert_eq!(
+        section::verify(&reader, &edges, &plane, &low),
+        Err(ReadError::Invalid)
+    );
+    edges.get_mut(&edge).unwrap().geometry = Geometry::Analytic(Curve::Circle(original));
+    let extra = copy_traversal(&low.outer[0]);
+    low.holes[hole].push(extra);
+    assert_eq!(
+        section::verify(&reader, &edges, &plane, &low),
+        Err(ReadError::Invalid)
+    );
+    low.holes[hole].pop();
+    // An unqualified outer-circle / multiple-cavity class must not run the
+    // old one-cavity ring proof while ignoring all additional inner bounds.
+    low.outer = low.holes[hole].iter().map(copy_traversal).collect();
+    assert_eq!(
+        section::verify(&reader, &edges, &plane, &low),
+        Err(ReadError::Unsupported)
+    );
+}
+
+fn copy_traversal(edge: &Traversal) -> Traversal {
+    Traversal {
+        edge: edge.edge,
+        start: edge.start,
+        end: edge.end,
+        forward: edge.forward,
+    }
 }

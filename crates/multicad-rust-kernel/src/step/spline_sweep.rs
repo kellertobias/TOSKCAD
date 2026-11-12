@@ -23,23 +23,15 @@ pub(super) fn encode(
     }
     let tolerance = tolerance_mm.min(SPUR_STEP_MAX_ERROR_MM);
     check_placement(sweep, &placement, tolerance)?;
-    let outline = sweep
-        .outline()
-        .iter()
-        .map(|edge| match edge {
-            Edge::Analytic(edge) => ProfileEdge::Analytic(*edge),
-            Edge::Cubic(cubic) => ProfileEdge::Cubic(CubicTrim::decoded(cubic, tolerance)),
-        })
-        .collect();
-    let hole = sweep.hole().map(|hole| vec![ProfileEdge::Analytic(hole)]);
-    normal_sweep::encode_rings(
-        file,
-        &mut std::iter::once(outline).chain(hole),
-        sweep.height_mm(),
-        &[],
-        placement,
-        false,
-    )
+    let mut rings = sweep.rings().map(|ring| {
+        ring.iter()
+            .map(|edge| match edge {
+                Edge::Analytic(edge) => ProfileEdge::Analytic(*edge),
+                Edge::Cubic(cubic) => ProfileEdge::Cubic(CubicTrim::decoded(cubic, tolerance)),
+            })
+            .collect()
+    });
+    normal_sweep::encode_rings(file, &mut rings, sweep.height_mm(), &[], placement, false)
 }
 
 fn check_placement(sweep: &Sweep, placement: &Placement, tolerance: f64) -> Result<(), StepError> {
@@ -58,10 +50,9 @@ fn check_placement(sweep: &Sweep, placement: &Placement, tolerance: f64) -> Resu
     // STEP normalizes placement directions. Bound the change in a frame
     // whose supplied basis is only orthonormal within numerical precision.
     let frame_error = (dot(u, u) - 1.).abs() + (dot(v, v) - 1.).abs() + dot(u, v).abs();
-    let outline = sweep.outline();
-    let joins = outline
-        .iter()
-        .zip(outline.iter().cycle().skip(1))
+    let joins = sweep
+        .rings()
+        .flat_map(|ring| ring.iter().zip(ring.iter().cycle().skip(1)))
         .map(|(edge, next)| {
             let [x, y] = edge.point(1.);
             let [a, b] = next.point(0.);

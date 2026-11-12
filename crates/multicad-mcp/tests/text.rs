@@ -131,22 +131,77 @@ fn abo_text_extrudes_with_open_counters_and_rebuilds_after_edits() {
     for b in bodies {
         assert_eq!(b["solid_count"], 1, "{b}");
     }
-    // Each letter is one solid; its faces are both caps, the outer wall and
-    // one wall per counter (one closed spline per contour).
+    // Physical walls may split at certified cubic span boundaries. Verify
+    // the retained actual counter loops and every wall, not a native face count.
+    let checked = multicad_model::Compiler {
+        omit_display: true,
+        ..Default::default()
+    }
+    .compile(&host.document(), 3)
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
     for (body, region) in bodies.iter().zip(&letters) {
+        let feature = serde_json::from_value(body["feature"].clone()).unwrap();
+        let solid = checked.solid(feature).unwrap();
+        let (sweep, _) = solid.rust_spline_sweep_data().unwrap();
+        assert_eq!(
+            sweep.holes().len(),
+            regions[*region]["holes"].as_u64().unwrap() as usize
+        );
         let faces = run(
             "reference_candidates",
-            json!({ "source": body["feature"], "kind": "face" }),
+            json!({"source":body["feature"],"kind":"face"}),
         )
         .unwrap();
-        let faces = faces["elements"].as_array().unwrap().len() as u64;
-        let counters = regions[*region]["holes"].as_u64().unwrap();
         assert_eq!(
-            faces,
-            3 + counters,
-            "caps, outer wall and one wall per counter"
+            faces["elements"].as_array().unwrap().len(),
+            2 + sweep.edges().count()
         );
+        let topology = solid.topology_snapshot(feature, 3).unwrap();
+        for face in topology
+            .elements
+            .iter()
+            .filter(|e| e.key.kind == multicad_core::references::TopologyKind::Face)
+        {
+            let intent =
+                multicad_core::references::GeometryIntent::capture(&topology, face.key).unwrap();
+            assert!(
+                matches!(multicad_core::references::resolve(&intent,&topology,3),multicad_core::references::Resolution::Resolved{key,..} if key==face.key)
+            );
+        }
+
+        solid.manufacturing_mesh(Default::default()).unwrap();
+        let path = directory.path().join(format!("letter-{region}.step"));
+        solid.write_step(&path).unwrap();
+        let imported = multicad_kernel::Solid::read_step(&path, Default::default()).unwrap();
+        assert!(close(
+            imported.volume_mm3().unwrap(),
+            solid.volume_mm3().unwrap()
+        ));
+        let (roundtrip, _) = imported.rust_spline_sweep_data().unwrap();
+        assert_eq!(roundtrip.holes().len(), sweep.holes().len());
     }
+
+    let members: Vec<_> = bodies
+        .iter()
+        .map(|body| {
+            checked
+                .solid(serde_json::from_value(body["feature"].clone()).unwrap())
+                .unwrap()
+        })
+        .collect();
+    let compound = multicad_kernel::Solid::compound_named(
+        &members,
+        multicad_core::document::EntityId::new(),
+        Default::default(),
+    )
+    .unwrap();
+    let path = directory.path().join("whole-lettering.step");
+    compound.write_step(&path).unwrap();
+    let imported = multicad_kernel::Solid::read_step(&path, Default::default()).unwrap();
+    assert_eq!(imported.solid_count().unwrap(), 3);
+    assert!(close(imported.volume_mm3().unwrap(), volume));
+    imported.manufacturing_mesh(Default::default()).unwrap();
 
     // Height edit: the same contour identities rebuild the extrusion.
     let edited = run(
@@ -181,6 +236,32 @@ fn abo_text_extrudes_with_open_counters_and_rebuilds_after_edits() {
     run("undo", json!({ "expected_revision": 5 })).unwrap();
     let inspect = run("inspect_sketch", json!({ "sketch": sketch })).unwrap();
     assert_eq!(inspect["texts"][0]["style"]["text"], "ABO");
+    let mut bytes = Vec::new();
+    multicad_core::project_file::write(
+        &multicad_core::project_file::ProjectFile::new(host.document()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let reopened = multicad_core::project_file::read(
+        &mut std::io::Cursor::new(bytes),
+        Default::default(),
+        &multicad_core::project_file::supported_capabilities(),
+    )
+    .unwrap();
+    let reopened = Headless::new(
+        Workspace::new(reopened.project.document).unwrap(),
+        None,
+        false,
+    );
+    let model = dispatch(&reopened, &call(), "evaluate_model", json!({})).unwrap();
+    let restored: f64 = model["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|part| part["volume_mm3"].as_f64().unwrap())
+        .sum();
+    assert!(close(restored, 4. * volume));
 }
 
 #[test]
@@ -369,4 +450,64 @@ fn anchored_multiline_cantarell_text_extrudes_and_rebuilds_after_anchor_edits() 
     let inspect = run("inspect_sketch", json!({ "sketch": sketch })).unwrap();
     assert_eq!(inspect["texts"][0]["style"]["anchor"], "center");
     assert_eq!(inspect["texts"][0]["style"]["alignment"], "center");
+}
+
+#[test]
+fn unqualified_curved_text_booleans_leave_the_source_repairable_for_new_body() {
+    let host = Headless::new(
+        Workspace::new(Document::new("Text rollback").unwrap()).unwrap(),
+        None,
+        false,
+    );
+    let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
+    let base = run(
+        "create_sketch",
+        json!({"expected_revision":0,"plane":"xy","name":"Plate"}),
+    )
+    .unwrap()["sketch"]
+        .clone();
+    run("sketch_add_rectangle",json!({"expected_revision":1,"sketch":base,"origin_mm":[-5,-5],"width":mm(50.),"height":mm(20.)})).unwrap();
+    let plate=run("extrude",json!({"expected_revision":2,"sketch":base,"regions":[0],"distance":mm(5.),"operation":"new_body"})).unwrap();
+    let part = plate["created"][0]["part"].clone();
+    let text = run(
+        "create_sketch",
+        json!({"expected_revision":3,"plane":"xy","name":"Lettering"}),
+    )
+    .unwrap()["sketch"]
+        .clone();
+    run(
+        "sketch_add_text",
+        json!({"expected_revision":4,"sketch":text,"text":"ABO","height_mm":8,"origin_mm":[0,0]}),
+    )
+    .unwrap();
+    let inspect = run("inspect_sketch", json!({"sketch":text})).unwrap();
+    let letters: Vec<_> = inspect["regions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["holes"].as_u64().unwrap() > 0)
+        .map(|r| r["index"].as_u64().unwrap())
+        .collect();
+    assert_eq!(letters.len(), 3);
+    let before = host.document();
+    for (operation, reverse) in [("cut", false), ("join", true)] {
+        let error=run("extrude",json!({"expected_revision":5,"sketch":text,"regions":letters,"distance":mm(2.),"operation":operation,"target_part":part,"reverse":reverse})).unwrap_err();
+        assert_eq!(error.code, "model_failed");
+        assert_eq!(host.document(), before);
+        let current = run("evaluate_model", json!({})).unwrap();
+        assert_eq!(current["parts"].as_array().unwrap().len(), 1);
+        assert!(close(
+            current["parts"][0]["volume_mm3"].as_f64().unwrap(),
+            5000.
+        ));
+    }
+    let repaired=run("extrude",json!({"expected_revision":5,"sketch":text,"regions":letters,"distance":mm(2.),"operation":"new_body"})).unwrap();
+    assert_eq!(repaired["created"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        run("evaluate_model", json!({})).unwrap()["parts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
 }

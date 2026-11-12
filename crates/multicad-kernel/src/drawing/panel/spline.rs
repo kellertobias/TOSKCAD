@@ -16,6 +16,12 @@ pub(in crate::drawing) fn project_spline_sweep(
     let (body, frame) = input.solid.spline_sweep_body()?;
     let [u, v, toward_viewer] = planar::view_axes(options.frame);
     let axis = frame.normal();
+    if !body.legacy_drawing_rims_supported() {
+        return Some(Err(err(
+            GeometryErrorKind::Unsupported,
+            "Rust spline counter-loop drawing projection is not yet qualified",
+        )));
+    }
     if dot(axis, u).hypot(dot(axis, v)) > 32. * f64::EPSILON
         || options.detail.is_some()
         || options.section_offset_mm.is_some()

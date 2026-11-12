@@ -261,3 +261,51 @@ fn coincident_and_reversed_neighbors_cannot_certify_a_simple_outline() {
         Err(ConstructionError::Unresolved)
     );
 }
+
+#[test]
+fn multiple_raw_rings_refuse_invalid_circle_members_before_certifying_occupancy() {
+    let line = |a, b| Edge::Analytic(normal_sweep::Edge::Line { a, b });
+    let exterior = vec![
+        line([0., 0.], [10., 0.]),
+        line([10., 0.], [10., 10.]),
+        line([10., 10.], [0., 10.]),
+        line([0., 10.], [0., 0.]),
+    ];
+    for radius in [0., f64::INFINITY] {
+        let invalid = vec![Edge::Analytic(normal_sweep::Edge::Circle {
+            center: [2., 2.],
+            radius_mm: radius,
+            clockwise: true,
+        })];
+        assert_eq!(
+            authored_rings(
+                &exterior,
+                &[
+                    invalid,
+                    vec![
+                        line([4., 4.], [4., 5.]),
+                        line([4., 5.], [5., 5.]),
+                        line([5., 5.], [5., 4.]),
+                        line([5., 4.], [4., 4.])
+                    ]
+                ],
+                1e-7,
+                None
+            ),
+            Err(ConstructionError::Invalid)
+        );
+    }
+    let mixed = vec![
+        Edge::Analytic(normal_sweep::Edge::Circle {
+            center: [2., 2.],
+            radius_mm: 1.,
+            clockwise: true,
+        }),
+        line([3., 2.], [3., 3.]),
+        line([3., 3.], [3., 2.]),
+    ];
+    assert_eq!(
+        authored_rings(&exterior, &[mixed], 1e-7, None),
+        Err(ConstructionError::Invalid)
+    );
+}

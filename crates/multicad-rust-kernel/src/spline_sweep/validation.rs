@@ -305,23 +305,36 @@ pub(super) fn authored(
     tolerance: f64,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<()> {
+    if matches!(outline, [Edge::Analytic(normal_sweep::Edge::Circle { .. })]) {
+        return Err(ConstructionError::Invalid);
+    }
     let mut budget = Budget {
         remaining: MAX_PAIR_WORK,
         interrupt,
     };
-    let mut section = Vec::with_capacity(outline.len());
-    let mut scale: f64 = 1.;
-    let check = |point: Point2| -> Result<()> {
-        if !point.into_iter().all(f64::is_finite) {
+    let section = boundaries(outline, tolerance, &mut budget)?;
+    if let Some(normal_sweep::Edge::Circle {
+        center, radius_mm, ..
+    }) = hole
+    {
+        check(center)?;
+        let winding = section
+            .iter()
+            .flat_map(|boundary| &boundary.pieces)
+            .map(|&piece| clear_disk(piece, center, radius_mm + tolerance, 0, &mut budget))
+            .sum::<Result<f64>>()?;
+        if (winding - TAU).abs() > 1e-7 {
             return Err(ConstructionError::Invalid);
         }
-        if point.into_iter().any(|v| v.abs() > 1e8) {
-            return Err(ConstructionError::Limit);
-        }
-        Ok(())
-    };
+    }
+    Ok(())
+}
+
+fn boundaries(outline: &[Edge], tolerance: f64, budget: &mut Budget<'_>) -> Result<Vec<Boundary>> {
+    let mut section = Vec::with_capacity(outline.len());
+    let mut scale: f64 = 1.;
     for edge in outline {
-        consume(&mut budget)?;
+        consume(budget)?;
         let pieces = match edge {
             Edge::Cubic(cubic) => cubic.bezier_spans().map(Piece::Bezier).collect::<Vec<_>>(),
             Edge::Analytic(normal_sweep::Edge::Line { a, b }) => {
@@ -356,6 +369,38 @@ pub(super) fn authored(
                     sweep: edge.signed_sweep_rad().ok_or(ConstructionError::Invalid)?,
                 })]
             }
+            Edge::Analytic(normal_sweep::Edge::Circle {
+                center,
+                radius_mm,
+                clockwise,
+            }) if outline.len() == 1 => {
+                check(*center)?;
+                if !radius_mm.is_finite() || *radius_mm <= tolerance {
+                    return Err(ConstructionError::Invalid);
+                }
+                for index in 0..8 {
+                    let arc = Arc {
+                        center: *center,
+                        radius: *radius_mm,
+                        start: index as f64 * (FRAC_PI_2 / 2.) * if *clockwise { -1. } else { 1. },
+                        sweep: (FRAC_PI_2 / 2.) * if *clockwise { -1. } else { 1. },
+                    };
+                    let piece = Piece::Arc(arc);
+                    let bounds = piece.bounds();
+                    scale = scale.max(
+                        bounds
+                            .into_iter()
+                            .flatten()
+                            .map(f64::abs)
+                            .fold(1., f64::max),
+                    );
+                    section.push(Boundary {
+                        pieces: vec![piece],
+                        bounds,
+                    });
+                }
+                continue;
+            }
             Edge::Analytic(normal_sweep::Edge::Circle { .. }) => {
                 return Err(ConstructionError::Invalid);
             }
@@ -385,7 +430,7 @@ pub(super) fn authored(
         return Err(ConstructionError::Unresolved);
     }
     for (a, b) in section.iter().zip(section.iter().cycle().skip(1)) {
-        consume(&mut budget)?;
+        consume(budget)?;
         let first = a
             .pieces
             .last()
@@ -406,20 +451,75 @@ pub(super) fn authored(
             return Err(ConstructionError::Unresolved);
         }
     }
-    simple(&section, tolerance, &mut budget)?;
-    if let Some(normal_sweep::Edge::Circle {
-        center, radius_mm, ..
-    }) = hole
+    simple(&section, tolerance, budget)?;
+    Ok(section)
+}
+
+pub(super) fn authored_rings(
+    outline: &[Edge],
+    holes: &[Vec<Edge>],
+    tolerance: f64,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<()> {
+    // Preserve the already-qualified single circular-bore path, including its
+    // complete disk clearance certificate, without resetting a multi-ring budget.
+    if holes.is_empty() {
+        return authored(outline, None, tolerance, interrupt);
+    }
+    if let [ring] = holes
+        && let [Edge::Analytic(circle @ normal_sweep::Edge::Circle { .. })] = ring.as_slice()
     {
-        check(center)?;
-        let winding = section
-            .iter()
-            .flat_map(|boundary| &boundary.pieces)
-            .map(|&piece| clear_disk(piece, center, radius_mm + tolerance, 0, &mut budget))
-            .sum::<Result<f64>>()?;
-        if (winding - TAU).abs() > 1e-7 {
-            return Err(ConstructionError::Invalid);
+        return authored(outline, Some(*circle), tolerance, interrupt);
+    }
+    let mut budget = Budget {
+        remaining: MAX_PAIR_WORK,
+        interrupt,
+    };
+    let rings = std::iter::once(outline)
+        .chain(holes.iter().map(Vec::as_slice))
+        .map(|ring| boundaries(ring, tolerance, &mut budget))
+        .collect::<Result<Vec<_>>>()?;
+    for i in 1..rings.len() {
+        for j in 0..i {
+            for a in &rings[i] {
+                for b in &rings[j] {
+                    consume(&mut budget)?;
+                    if separated(a.bounds, b.bounds, tolerance) {
+                        continue;
+                    }
+                    for &x in &a.pieces {
+                        for &y in &b.pieces {
+                            clear_pair(x, y, tolerance, 0, &mut budget)?;
+                        }
+                    }
+                }
+            }
         }
+        let sample = holes[i - 1][0].point(0.);
+        for (j, ring) in rings.iter().enumerate() {
+            if j == i {
+                continue;
+            }
+            let winding = ring
+                .iter()
+                .flat_map(|edge| &edge.pieces)
+                .map(|&piece| clear_disk(piece, sample, tolerance, 0, &mut budget))
+                .sum::<Result<f64>>()?;
+            let expected = if j == 0 { TAU } else { 0. };
+            if (winding - expected).abs() > 1e-7 {
+                return Err(ConstructionError::Invalid);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check(point: Point2) -> Result<()> {
+    if !point.into_iter().all(f64::is_finite) {
+        return Err(ConstructionError::Invalid);
+    }
+    if point.into_iter().any(|v| v.abs() > 1e8) {
+        return Err(ConstructionError::Limit);
     }
     Ok(())
 }
