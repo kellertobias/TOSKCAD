@@ -102,6 +102,21 @@ fn imported_tetrahedron_proves_occupied_convex_material_for_cut_join_and_queries
                 .unwrap();
             near(cut.volume_mm3().unwrap(), 26. / 3.);
             near(join.volume_mm3().unwrap(), 38. / 3.);
+            let default_cut = source
+                .boolean(&tool, BooleanOperation::Subtract, policy)
+                .unwrap()
+                .unwrap();
+            let default_join = source
+                .boolean(&tool, BooleanOperation::Union, policy)
+                .unwrap()
+                .unwrap();
+            let default_common = source
+                .boolean(&tool, BooleanOperation::Intersect, policy)
+                .unwrap()
+                .unwrap();
+            near(default_cut.volume_mm3().unwrap(), 26. / 3.);
+            near(default_join.volume_mm3().unwrap(), 38. / 3.);
+            near(default_common.volume_mm3().unwrap(), 2.);
             let common = source
                 .rust_planar_intersection_metrics(&tool, policy)
                 .unwrap()
@@ -141,7 +156,7 @@ fn imported_tetrahedron_proves_occupied_convex_material_for_cut_join_and_queries
                 })
                 .collect();
             assert_eq!(retained.len(), 7);
-            for result in [&cut, &join] {
+            for result in [&cut, &join, &default_cut, &default_join] {
                 assert_eq!(result.solid_count().unwrap(), 1);
                 let output = result.topology_snapshot(owner, 1).unwrap();
                 for (reference, original) in &retained {

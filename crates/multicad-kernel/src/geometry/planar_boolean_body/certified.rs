@@ -51,6 +51,14 @@ impl Solid {
                 .linear_body()
                 .and_then(|(body, _)| body.straight_section())
                 .is_some_and(|(rings, _)| rings.len() > 1)
+            // Retain the cheap rectilinear path when its material cells are
+            // available. Other owned planar sources need the same certified
+            // boundary/material path used by the explicit planar APIs.
+            || ((self.linear_body().is_some()
+                || self.polygon_prism().is_some()
+                || self.rust_prism_frame().is_some()
+                || self.planar_boolean_body().is_some())
+                && !self.orthogonal_cells().is_ok_and(|cells| cells.is_some()))
     }
 
     /// A selected provider returns exact empty material as `Ok(None)`. The outer
@@ -134,6 +142,30 @@ fn certified_boolean(
     checkpoint(interrupt)?;
     if solids.len() > MAX_OPERANDS {
         return Err(planar_error(Error::Limit));
+    }
+    if operation == BooleanOperation::Intersect && solids.len() == 2 {
+        let halfspaces = solids
+            .iter()
+            .map(|solid| {
+                let (body, frame) = solid.linear_body()?;
+                body.exact_termination_halfspaces(frame)
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(halfspaces) = halfspaces
+            && halfspaces[0].iter().any(|a| {
+                halfspaces[1].iter().any(|b| {
+                    a.iter().zip(b).all(|(&a, &b)| {
+                        a.checked_add(b)
+                            .is_ok_and(|sum| sum == Rational::new(0, 1).expect("zero"))
+                    })
+                })
+            })
+        {
+            // Each complete source is bounded by its exact coefficient plane.
+            // Opposing identical constraints exclude positive-volume common
+            // material, including hollow profiles and exact miter contact.
+            return Ok(None);
+        }
     }
     let mut materials = Vec::with_capacity(solids.len());
     let mut sources = Vec::with_capacity(solids.len());

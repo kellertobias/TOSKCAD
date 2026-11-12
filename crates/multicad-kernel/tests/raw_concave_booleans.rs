@@ -130,6 +130,21 @@ fn raw_concave_cut_join_and_intersection_queries_use_the_authored_material_in_ev
                     .unwrap();
                 near(joined.volume_mm3().unwrap(), volume + 1. - removed);
                 assert_eq!(joined.solid_count().unwrap(), 1);
+                let default_cut = source
+                    .boolean(&tool, BooleanOperation::Subtract, policy)
+                    .expect("public cut uses certified planar material")
+                    .unwrap();
+                let default_join = source
+                    .boolean(&tool, BooleanOperation::Union, policy)
+                    .expect("public join uses certified planar material")
+                    .unwrap();
+                let default_common = source
+                    .boolean(&tool, BooleanOperation::Intersect, policy)
+                    .unwrap()
+                    .unwrap();
+                near(default_cut.volume_mm3().unwrap(), volume - removed);
+                near(default_join.volume_mm3().unwrap(), volume + 1. - removed);
+                near(default_common.volume_mm3().unwrap(), removed);
                 // The right exterior wall is unaffected and retains its authored frame.
                 let right = before
                     .elements
@@ -141,7 +156,7 @@ fn raw_concave_cut_join_and_intersection_queries_use_the_authored_material_in_ev
                     })
                     .unwrap();
                 let intent = GeometryIntent::capture(&before, right.key).unwrap();
-                for result in [&cut, &joined] {
+                for result in [&cut, &joined, &default_cut, &default_join] {
                     let topology = result.topology_snapshot(owner, 1).unwrap();
                     assert!(matches!(
                         resolve(&intent, &topology, 1),

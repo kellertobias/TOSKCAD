@@ -39,6 +39,184 @@ fn near(a: f64, b: f64) {
 }
 
 #[test]
+fn rounded_travel_coefficients_cannot_use_nominal_caps_as_a_contact_proof() {
+    let profile = CurvedProfile {
+        frame: PlaneFrame::default(),
+        outer: [
+            ([-2., -1.], [2., -1.]),
+            ([2., -1.], [2., 1.]),
+            ([2., 1.], [-2., 1.]),
+            ([-2., 1.], [-2., -1.]),
+        ]
+        .into_iter()
+        .map(|(a, b)| CurvedEdge2d::Line { a, b })
+        .collect(),
+        holes: vec![],
+    };
+    let join = PlaneFrame {
+        origin: [0., 0., 1.],
+        u: [0.8, 0., -0.6],
+        v: [0., 1., 0.],
+    };
+    let stock = |direction, planes| {
+        let owner = EntityId::new();
+        let origins: Vec<_> = (0..4)
+            .map(|i| Origin {
+                source: owner,
+                role: format!("side.{i}"),
+            })
+            .collect();
+        Solid::rust_extrude_between_planes_named(
+            &profile,
+            direction,
+            planes,
+            owner,
+            &origins,
+            GeometryPolicy::default(),
+        )
+        .unwrap()
+    };
+    let first = stock(
+        [0.6, 0., 0.8],
+        [
+            PlaneFrame {
+                origin: [0., 0., -10.],
+                ..PlaneFrame::default()
+            },
+            join,
+        ],
+    );
+    let second = stock(
+        [-0.6, 0., 0.8],
+        [
+            join,
+            PlaneFrame {
+                origin: [0., 0., 10.],
+                ..PlaneFrame::default()
+            },
+        ],
+    );
+    // The divisions defining the two travel laws round differently. Their
+    // exact coefficient surfaces have a tiny positive common band at X=0,
+    // despite the matching nominal cap origins and opposite normals.
+    assert!(!matches!(
+        first.boolean(
+            &second,
+            BooleanOperation::Intersect,
+            GeometryPolicy::default()
+        ),
+        Ok(None)
+    ));
+}
+
+#[test]
+fn hollow_sloping_caps_prove_contact_without_losing_positive_common_material() {
+    let policy = GeometryPolicy::default();
+    let source = profile();
+    let slope = 0.25_f64;
+    let length = slope.hypot(1.);
+    let join = PlaneFrame {
+        origin: [0., 0., 10.],
+        u: [1. / length, 0., slope / length],
+        v: [0., 1., 0.],
+    };
+    let stock = |start, end| {
+        let owner = EntityId::new();
+        let origins: Vec<_> = (0..8)
+            .map(|i| Origin {
+                source: owner,
+                role: format!("wall.{i}"),
+            })
+            .collect();
+        Solid::rust_extrude_between_planes_named(
+            &source,
+            [0., 0., 1.],
+            [start, end],
+            owner,
+            &origins,
+            policy,
+        )
+        .unwrap()
+    };
+    let first = stock(PlaneFrame::default(), join);
+    let end = PlaneFrame {
+        origin: [0., 0., 25.],
+        ..PlaneFrame::default()
+    };
+    let poses = [
+        RigidTransform::default(),
+        RigidTransform {
+            rotation: [[0.8, -0.36, 0.48], [0.6, 0.48, -0.64], [0., 0.8, 0.6]],
+            translation_mm: [11., -7., 23.],
+        },
+    ];
+    for pose in poses {
+        let first = first.transformed(pose).unwrap();
+        for penetration in [0., 1e-8, 0.25] {
+            let second = stock(
+                PlaneFrame {
+                    origin: [0., 0., 10. - penetration],
+                    ..join
+                },
+                end,
+            )
+            .transformed(pose)
+            .unwrap();
+            let result = first.boolean(&second, BooleanOperation::Intersect, policy);
+            if penetration == 0. {
+                assert!(result.unwrap().is_none());
+            } else if penetration < policy.minimum_feature_mm {
+                assert!(!matches!(result, Ok(None)), "penetration was lost");
+            } else {
+                let common = result.unwrap().unwrap();
+                near(common.volume_mm3().unwrap(), 104. * penetration);
+                assert_eq!(common.solid_count().unwrap(), 1);
+                common
+                    .manufacturing_mesh_with_receipt(Default::default())
+                    .unwrap();
+                let folder = tempfile::tempdir().unwrap();
+                let path = folder.path().join("hollow-miter-common.step");
+                common.write_step(&path).unwrap();
+                near(
+                    Solid::import_rust_step(
+                        &std::fs::read_to_string(path).unwrap(),
+                        EntityId::new(),
+                        policy,
+                    )
+                    .unwrap()
+                    .volume_mm3()
+                    .unwrap(),
+                    104. * penetration,
+                );
+            }
+        }
+    }
+    // A large translation can round distinct cap positions to the same world
+    // value. Repeating an identity placement also removes the shared immediate
+    // placement chart: that must not turn a real overlap into proven contact.
+    let far = RigidTransform {
+        translation_mm: [0., 0., 1e6],
+        ..RigidTransform::default()
+    };
+    let first = first.transformed(far).unwrap();
+    let second = stock(
+        PlaneFrame {
+            origin: [0., 0., 10. - 1e-12],
+            ..join
+        },
+        end,
+    )
+    .transformed(far)
+    .unwrap()
+    .transformed(RigidTransform::default())
+    .unwrap();
+    assert!(!matches!(
+        first.boolean(&second, BooleanOperation::Intersect, policy),
+        Ok(None)
+    ));
+}
+
+#[test]
 fn posed_hollow_stock_cuts_keep_material_and_untouched_wall_intents() {
     let policy = GeometryPolicy::default();
     for reverse in [false, true] {

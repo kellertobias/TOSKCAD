@@ -9,7 +9,7 @@ impl Solid {
         policy: GeometryPolicy,
     ) -> Option<Result<Vec<ConvexPart>, GeometryError>> {
         let (body, frame) = self.linear_body()?;
-        let (rings, height) = body.straight_section()?;
+        let (rings, height) = body.material_partition_section()?;
         if rings.len() < 2 {
             return None;
         }
@@ -44,7 +44,23 @@ impl Solid {
                         .collect::<Result<Vec<_>, _>>()
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let pieces: Vec<_> = cells.into_iter().map(|c| c.piece).collect();
+            let pieces: Vec<_> = cells
+                .into_iter()
+                .map(|c| {
+                    if !body.has_plane_terminations() {
+                        return Ok(c.piece);
+                    }
+                    // The source partition has only its two cap levels. Each
+                    // generator maps to the actual, already validated pair of
+                    // termination planes; no display geometry is involved.
+                    c.piece
+                        .transformed(
+                            |[x, y, z]| body.material_partition_point(z == height, [x, y]),
+                            policy.linear_tolerance_mm,
+                        )
+                        .map_err(planar_error)
+                })
+                .collect::<Result<_, _>>()?;
             let pieces =
                 PlanarBooleanBody::placed_pieces(&pieces, frame, policy.linear_tolerance_mm)?;
             Ok(pieces.into_iter().zip(labels).collect())
