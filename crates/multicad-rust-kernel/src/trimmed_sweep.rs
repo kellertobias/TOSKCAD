@@ -10,6 +10,8 @@ use crate::{
     revolution::{edges, inside, sub},
 };
 
+mod halfspaces;
+
 type Point = [f64; 3];
 type Uv = [f64; 2];
 type Travel = [f64; 3];
