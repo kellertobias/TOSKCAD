@@ -1,5 +1,5 @@
-//! Unplaced pinned definitions are checked on the native owner thread too.
-use crate::{Compiler, ModelError, error};
+//! Pinned definitions are checked even without a placed instance.
+use crate::{Compiler, GeometryBackend, ModelError, error};
 use multicad_core::{
     document::{Document, EntityId},
     project_file::ContentHash,
@@ -13,6 +13,7 @@ pub(crate) fn validate_definitions(
     compiler: &Compiler,
     document: &Document,
     revision: u64,
+    backend: GeometryBackend,
     interrupt: Option<&dyn Fn() -> bool>,
     mut cache: Option<&mut crate::EvaluationCache>,
 ) -> Result<(), ModelError> {
@@ -20,7 +21,7 @@ pub(crate) fn validate_definitions(
     if definitions.len() > MAX_DEFINITIONS {
         return Err(error(
             None,
-            "Embedded symbol definition count exceeds the native evaluation budget",
+            "Embedded symbol definition count exceeds the geometry evaluation budget",
         ));
     }
     let mut entities = 0usize;
@@ -35,7 +36,7 @@ pub(crate) fn validate_definitions(
         if entities > MAX_TEMPLATE_ENTITIES {
             return Err(error(
                 Some(id),
-                "Embedded symbol templates exceed the native evaluation entity budget",
+                "Embedded symbol templates exceed the geometry evaluation entity budget",
             ));
         }
         let pin = definition.pin().map_err(|e| error(Some(id), e))?;
@@ -49,12 +50,12 @@ pub(crate) fn validate_definitions(
             // Core validates a construction-only template and its real role.
             // Its exact solids depend on a receiving path/context. The ordinary
             // wall/fence providers preflight every placed member below; an
-            // unplaced construction pin carries no native geometry receipt.
+            // unplaced construction pin carries no solid geometry receipt.
             continue;
         }
         // These providers consume only authored template source. Other providers
         // (including imported resources and context-dependent architecture) keep
-        // the complete native check on every compile until separately audited.
+        // the complete geometry check on every compile until separately audited.
         let pure = definition
             .template
             .entities()
@@ -73,7 +74,7 @@ pub(crate) fn validate_definitions(
         let proof = pure.then(|| {
             ContentHash::of(
                 format!(
-                    "multicad.symbol-native-proof/1|{pin}|{:?}|{:?}|{}",
+                    "multicad.symbol-proof/2|{backend:?}|{pin}|{:?}|{:?}|{}",
                     compiler.policy, compiler.mesh, compiler.omit_display,
                 )
                 .as_bytes(),
@@ -89,8 +90,8 @@ pub(crate) fn validate_definitions(
         }
         // Core rejects nested symbol providers. This recursive call therefore
         // evaluates a bounded ordinary source graph, not another symbol graph.
-        let native = compiler
-            .compile_interruptible(&definition.template, revision, interrupt)
+        let evaluated = compiler
+            .compile_with_backend(&definition.template, revision, backend, interrupt)
             .map_err(|e| {
                 // An interrupted check says nothing about the definition.
                 if crate::compiler::is_superseded(&e) {
@@ -99,18 +100,18 @@ pub(crate) fn validate_definitions(
                 error(
                     Some(id),
                     format!(
-                        "Pinned symbol '{}' has invalid native geometry: {e}",
+                        "Pinned symbol '{}' has invalid {backend:?} geometry: {e}",
                         definition.name
                     ),
                 )
             })?;
-        if native.solid(definition.root).is_none() {
+        if evaluated.solid(definition.root).is_none() {
             return Err(error(
                 Some(id),
                 "A pinned symbol must have an exact nonempty Part or Assembly root",
             ));
         }
-        require_references(id, &definition.template, &native.snapshot().references)?;
+        require_references(id, &definition.template, &evaluated.snapshot().references)?;
         if interrupt.is_some_and(|f| f()) {
             return Err(error(Some(id), "Symbol definition evaluation superseded"));
         }

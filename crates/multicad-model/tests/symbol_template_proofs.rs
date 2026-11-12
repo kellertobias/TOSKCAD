@@ -189,29 +189,50 @@ fn zero_capacity_disables_template_proof_retention() {
 fn interruption_inside_template_validation_cannot_seed_a_later_hit() {
     let session = fixture();
     let compiler = Compiler::default();
-    let mut cache = EvaluationCache::default();
     let checkpoints = std::cell::Cell::new(0);
-    let interrupt = || {
-        checkpoints.set(checkpoints.get() + 1);
-        checkpoints.get() >= 3
-    };
-    assert!(
-        compiler
+    compiler
+        .compile_cached(
+            &mut EvaluationCache::default(),
+            session.document(),
+            session.revision(),
+            Some(&|| {
+                checkpoints.set(checkpoints.get() + 1);
+                false
+            }),
+        )
+        .unwrap();
+    let mut interrupted_template = false;
+    for stop in 1..=checkpoints.get() {
+        let mut cache = EvaluationCache::default();
+        let calls = std::cell::Cell::new(0);
+        let interrupt = || {
+            calls.set(calls.get() + 1);
+            calls.get() >= stop
+        };
+        let failure = compiler
             .compile_cached(
                 &mut cache,
                 session.document(),
                 session.revision(),
-                Some(&interrupt)
+                Some(&interrupt),
             )
-            .is_err()
+            .err()
+            .unwrap();
+        assert!(failure.message.contains("superseded"), "{failure}");
+        let checks = cache.symbol_template_native_checks();
+        interrupted_template |= checks > 0;
+        assert_eq!(cache.symbol_template_proofs(), 0);
+        compiler
+            .compile_cached(&mut cache, session.document(), session.revision(), None)
+            .unwrap();
+        assert_eq!(cache.symbol_template_native_checks(), checks + 1);
+        assert_eq!(cache.symbol_template_proof_hits(), 0);
+        assert_eq!(cache.symbol_template_proofs(), 1);
+    }
+    assert!(
+        interrupted_template,
+        "Exercise cancellation after template evaluation begins"
     );
-    assert_eq!(cache.symbol_template_native_checks(), 1);
-    assert_eq!(cache.symbol_template_proofs(), 0);
-    compiler
-        .compile_cached(&mut cache, session.document(), session.revision(), None)
-        .unwrap();
-    assert_eq!(cache.symbol_template_native_checks(), 2);
-    assert_eq!(cache.symbol_template_proof_hits(), 0);
 }
 #[test]
 fn receipts_obey_owner_capacity_and_policy_changes_require_new_native_proof() {
@@ -228,4 +249,78 @@ fn receipts_obey_owner_capacity_and_policy_changes_require_new_native_proof() {
     }
     assert_eq!(cache.symbol_template_native_checks(), 3);
     assert_eq!(cache.symbol_template_proof_hits(), 0);
+}
+
+#[test]
+fn changed_invalid_template_cannot_borrow_an_old_completed_pin_receipt() {
+    let mut session = fixture();
+    let compiler = Compiler::default();
+    let mut cache = EvaluationCache::default();
+    compiler
+        .compile_cached(&mut cache, session.document(), session.revision(), None)
+        .unwrap();
+    let before = session.document().clone();
+    let (id, mut pinned) = symbols::definitions(&before).unwrap().pop().unwrap();
+    let original = before.get(id).unwrap().clone();
+    let mut feature = pinned
+        .template
+        .entities()
+        .find(|e| matches!(e.data, EntityData::Feature { .. }))
+        .unwrap()
+        .clone();
+    let EntityData::Feature { definition, .. } = &mut feature.data else {
+        unreachable!()
+    };
+    let mut primitive = model::PrimitiveDefinition::from_definition(definition).unwrap();
+    let model::PrimitiveParameters::Box { size, .. } = &mut primitive.parameters else {
+        unreachable!()
+    };
+    size[0] = model::length(-10.);
+    *definition = primitive.definition().unwrap();
+    pinned.template = pinned
+        .template
+        .edited(&[Mutation::Replace(feature)])
+        .unwrap();
+    let mut replacement = original.clone();
+    let EntityData::Extension { definition, .. } = &mut replacement.data else {
+        unreachable!()
+    };
+    *definition = pinned.definition().unwrap();
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Invalid pinned geometry".into(),
+            edits: vec![Mutation::Replace(replacement)],
+        })
+        .unwrap();
+    let invalid = session.document().clone();
+    let error = compiler
+        .compile_cached(&mut cache, &invalid, session.revision(), None)
+        .err()
+        .unwrap();
+    assert_eq!(error.entity, Some(id));
+    assert!(error.message.contains("Pinned symbol"), "{error}");
+    assert!(error.message.to_lowercase().contains("positive"), "{error}");
+    assert_eq!(session.document(), &invalid);
+    assert_eq!(cache.symbol_template_native_checks(), 2);
+    assert_eq!(
+        cache.symbol_template_proofs(),
+        1,
+        "Only the earlier valid pin is retained"
+    );
+    assert_eq!(cache.symbol_template_proof_hits(), 0);
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Repair pin".into(),
+            edits: vec![Mutation::Replace(original)],
+        })
+        .unwrap();
+    compiler
+        .compile_cached(&mut cache, session.document(), session.revision(), None)
+        .unwrap();
+    assert_eq!(cache.symbol_template_native_checks(), 2);
+    assert_eq!(cache.symbol_template_proof_hits(), 1);
 }

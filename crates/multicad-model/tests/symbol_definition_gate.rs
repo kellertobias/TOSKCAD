@@ -72,8 +72,8 @@ fn an_unplaced_native_invalid_definition_cannot_pass_the_complete_model_gate() {
         .err()
         .expect("Bad template must fail even with no placements");
     assert!(error.message.contains("Pinned symbol"), "{error}");
-    assert!(error.message.contains("positive"), "{error}");
-    // Pure source remains serializable and repairable; the native gate is the
+    assert!(error.message.to_lowercase().contains("positive"), "{error}");
+    // Pure source remains serializable and repairable; the geometry gate is the
     // authority for Apply/export, rather than source-container parsing alone.
     assert!(multicad_core::project_file::ProjectFile::new(target.document().clone()).is_ok());
 }

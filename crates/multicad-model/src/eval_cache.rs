@@ -458,7 +458,7 @@ impl EvaluationCache {
     ) -> crate::native_intersection_proofs::NativeIntersectionProofStats {
         self.native_intersections.stats()
     }
-    /// Completed, bounded native template receipts retained by this owner.
+    /// Completed, bounded, backend-specific template receipts retained by this owner.
     pub fn symbol_template_proofs(&self) -> usize {
         self.symbol_proofs.len()
     }
@@ -466,7 +466,7 @@ impl EvaluationCache {
     pub fn symbol_template_proof_hits(&self) -> usize {
         self.symbol_proof_hits
     }
-    /// Cumulative template native checks, including failed checks.
+    /// Cumulative template geometry checks, including failed checks.
     pub fn symbol_template_native_checks(&self) -> usize {
         self.symbol_native_checks
     }

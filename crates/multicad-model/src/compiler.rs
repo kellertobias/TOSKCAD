@@ -586,9 +586,7 @@ impl Compiler {
         let mut pair_proofs = crate::pair_cycle_proofs::CycleTransaction::new(store);
         if let Some(cache) = cache.as_deref_mut() {
             cache.reset_compile_stats();
-            if native_backend {
-                cache.begin_symbol_proofs();
-            }
+            cache.begin_symbol_proofs();
         }
         let mut result = self
             .compile_scoped_unchecked(
@@ -610,7 +608,7 @@ impl Compiler {
                     e
                 }
             });
-        if native_backend && let Some(cache) = cache.as_deref_mut() {
+        if let Some(cache) = cache.as_deref_mut() {
             cache.finish_symbol_proofs(result.is_ok());
         }
         native_publication.finish(result.is_ok() && full_evaluation);
@@ -665,11 +663,13 @@ impl Compiler {
         self.policy.validate().map_err(|e| error(None, e))?;
         if backend == GeometryBackend::Rust && roots.is_none() {
             crate::rust_backend::validate_document(document, None)?;
-        } else if backend == GeometryBackend::OpenCascade && roots.is_none() {
+        }
+        if roots.is_none() {
             crate::symbols::validate_definitions(
                 self,
                 document,
                 revision,
+                backend,
                 interrupt,
                 cache.as_deref_mut(),
             )?;
