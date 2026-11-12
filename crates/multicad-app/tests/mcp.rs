@@ -142,6 +142,99 @@ fn formula(expression: &str) -> Value {
 }
 
 #[test]
+fn default_app_reopens_and_exports_both_sides_of_an_angled_planar_split() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        document::Document,
+        model::{
+            self, BodyInput, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest,
+            SplitOperationRequest, SplitPlane, SplitSideV2, SplitTool,
+        },
+        project_file::{self, ProjectFile},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("angled-split.tcd");
+    let mut session = Session::new(Document::new("Angled planar split").unwrap()).unwrap();
+    let actor = Actor::local(Channel::Ui);
+    let stock = PrimitiveRequest::new(
+        "Stock",
+        PrimitiveParameters::Box {
+            size: [10.; 3].map(model::length),
+            frame: Default::default(),
+        },
+    );
+    let prepared =
+        model::prepare_primitive(&session, session.revision(), actor.clone(), &stock).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let request = SplitOperationRequest::new(
+        vec![BodyInput {
+            body: stock.body,
+            producer: stock.feature,
+        }],
+        SplitTool::Plane {
+            source: SplitPlane::Authored {
+                frame: Box::new(PrimitiveFrame {
+                    origin: [0., 0., 4.].map(model::length),
+                    u: [1., 0., 0.],
+                    v: [0., 0.6, 0.8],
+                }),
+            },
+        },
+        false,
+    );
+    let prepared =
+        model::prepare_split_operation(&session, session.revision(), actor, &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(session.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    std::fs::write(&project, bytes).unwrap();
+    // Deliberately omit --rust-model: the normal application must select Rust.
+    let arguments = [
+        "--project",
+        project.to_str().unwrap(),
+        "--export-dir",
+        directory.path().to_str().unwrap(),
+    ];
+    for reopen in [false, true] {
+        let mut client = Client::start(&arguments);
+        assert_eq!(
+            client.ok("document_info", json!({}))["geometry_backend"],
+            "rust"
+        );
+        let evaluated = client.ok("evaluate_model", json!({}));
+        assert_eq!(evaluated["parts"].as_array().unwrap().len(), 2);
+        for output in &request.targets[0].outputs {
+            let expected = if output.side == SplitSideV2::PositivePlane {
+                135.
+            } else {
+                865.
+            };
+            let part = evaluated["parts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["part"] == json!(output.body))
+                .unwrap();
+            close(part["volume_mm3"].as_f64().unwrap(), expected);
+            assert_eq!(part["feature"], json!(output.feature));
+            let receipt = client.ok(
+                "export_step",
+                json!({"part":output.body,
+                "file_name":format!("angled-{}-{reopen}.step", output.body)}),
+            );
+            close(receipt["readback_volume_mm3"].as_f64().unwrap(), expected);
+        }
+        let revision = client.revision();
+        client.ok("save_project", json!({"expected_revision":revision}));
+    }
+}
+
+#[test]
 fn rust_stdio_rebuilds_and_reopens_geometry_through_the_real_cli() {
     let directory = tempfile::tempdir().unwrap();
     let project = directory.path().join("rust.tcd");
