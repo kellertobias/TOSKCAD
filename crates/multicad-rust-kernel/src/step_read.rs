@@ -32,6 +32,11 @@ pub use normal_relief::{normal_relief_import_matches, verify_normal_relief};
 mod part21;
 mod round;
 mod rounded_cylinder;
+mod rounded_thread;
+pub use rounded_thread::{
+    ImportedRoundedThread, read_rounded_thread, read_rounded_thread_compound,
+    rounded_thread_import_matches, verify_rounded_thread,
+};
 mod sphere;
 mod spline;
 mod spline_sweep;

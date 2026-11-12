@@ -1039,7 +1039,7 @@ pub(crate) fn product([ax, ay]: Complex, [bx, by]: Complex) -> Complex {
     [ax * bx - ay * by, ax * by + ay * bx]
 }
 
-fn affine_jet(t: f64, radius: f64, slope: f64, sense: f64) -> [Complex; JETS] {
+pub(super) fn affine_jet(t: f64, radius: f64, slope: f64, sense: f64) -> [Complex; JETS] {
     let (sin, cos) = (sense * t).sin_cos();
     let rotation = [cos, sin];
     let imaginary = [0., sense];
@@ -1066,7 +1066,7 @@ fn control_half(jet: [Complex; JETS], length: f64) -> [Complex; JETS] {
     })
 }
 
-fn curve(
+pub(super) fn curve(
     file: &mut StepFile,
     spline: &Spline,
     [from, to]: [Vertex; 2],
@@ -1094,7 +1094,7 @@ fn curve(
     file.entity(format_args!("EDGE_CURVE('',{start},{end},{curve},.T.)"))
 }
 
-fn surface(
+pub(super) fn surface(
     file: &mut StepFile,
     radial: &Spline,
     axial: &Spline,

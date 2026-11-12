@@ -14,7 +14,7 @@ mod external;
 mod hex_head;
 mod socket_head;
 mod tangent_shank;
-mod volume;
+pub(super) mod volume;
 
 type EdgeRef = (u32, bool);
 
@@ -574,19 +574,24 @@ pub(super) fn ring(shell: &Shell<'_, '_>, id: u32, exterior: bool) -> Result<Vec
 }
 
 #[derive(Clone, Copy)]
-struct Proof {
-    error: Option<f64>,
-    extent: f64,
+pub(super) struct Proof {
+    pub(super) error: Option<f64>,
+    pub(super) extent: f64,
 }
 impl Proof {
-    fn angular(self) -> f64 {
+    pub(super) fn angular(self) -> f64 {
         self.error.map_or(1e-10, |e| (e / self.extent).min(1e-10))
     }
-    fn equal(self, a: Point, b: Point) -> bool {
+    pub(super) fn equal(self, a: Point, b: Point) -> bool {
         self.error
             .map_or(a == b, |error| length(sub(a, b)) <= error)
     }
-    fn knots(self, mult: &Value<'_>, knots_value: &Value<'_>, expected: &Spline) -> Result<()> {
+    pub(super) fn knots(
+        self,
+        mult: &Value<'_>,
+        knots_value: &Value<'_>,
+        expected: &Spline,
+    ) -> Result<()> {
         if self.error.is_none() {
             return knots(mult, knots_value, expected);
         }
@@ -611,7 +616,7 @@ impl Proof {
         }
         Ok(())
     }
-    fn poles(
+    pub(super) fn poles(
         self,
         shell: &Shell<'_, '_>,
         actual: &Value<'_>,
@@ -630,7 +635,7 @@ impl Proof {
         require(points.len() == ids.len())?;
         Ok(points)
     }
-    fn axis(
+    pub(super) fn axis(
         self,
         shell: &Shell<'_, '_>,
         id: &Value<'_>,
@@ -680,7 +685,7 @@ pub(super) fn poles(
     Ok(points)
 }
 
-fn spline_edge(
+pub(super) fn spline_edge(
     proof: Proof,
     shell: &mut Shell<'_, '_>,
     id: u32,

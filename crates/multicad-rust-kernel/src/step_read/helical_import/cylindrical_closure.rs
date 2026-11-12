@@ -14,7 +14,7 @@ fn difference(a: f64, b: f64) -> [f64; 2] {
 }
 /// Bound the exact real sum of products of the supplied finite f64 values.
 /// Subnormal product residuals get one outward ulp even when FMA rounds zero.
-fn expression_bound(terms: impl IntoIterator<Item = (f64, f64)>) -> f64 {
+pub(in crate::step_read) fn expression_bound(terms: impl IntoIterator<Item = (f64, f64)>) -> f64 {
     let mut value = 0.;
     let mut error = 0.;
     for (a, b) in terms {

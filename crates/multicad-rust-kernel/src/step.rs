@@ -43,6 +43,8 @@ mod normal_sweep;
 mod pierced_sweep;
 mod planar_union;
 mod rounded_cylinder;
+pub(crate) mod rounded_thread;
+pub use rounded_thread::{supports_rounded_thread, write_rounded_thread};
 mod spline_sweep;
 mod spur_gear;
 mod stadium;

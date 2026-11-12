@@ -32,10 +32,10 @@ struct Sample {
     derivative: [f64; WIDTH],
 }
 
-pub(super) struct Quadrature([Sample; NODES.len()]);
+pub(in crate::step_read) struct Quadrature([Sample; NODES.len()]);
 
 impl Quadrature {
-    pub(super) fn new() -> Self {
+    pub(in crate::step_read) fn new() -> Self {
         Self(NODES.map(|(parameter, weight)| {
             let lower = basis::<DEGREE>(parameter);
             let derivative = from_fn(|i| {
@@ -50,7 +50,12 @@ impl Quadrature {
         }))
     }
 
-    pub(super) fn spline_flux(&self, rows: &[Vec<Point>], origin: Point, axis: Point) -> f64 {
+    pub(in crate::step_read) fn spline_flux(
+        &self,
+        rows: &[Vec<Point>],
+        origin: Point,
+        axis: Point,
+    ) -> f64 {
         let mut flux = 0.;
         for radial in rows.windows(WIDTH).step_by(DEGREE) {
             for axial in (0..radial[0].len() - DEGREE).step_by(DEGREE) {

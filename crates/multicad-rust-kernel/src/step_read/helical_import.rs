@@ -9,7 +9,7 @@ use crate::{
 use helical::{face, require};
 mod headed;
 pub use headed::helical_screw_import_matches;
-mod cylindrical_closure;
+pub(super) mod cylindrical_closure;
 mod receiver;
 pub use receiver::helical_receiver_import_matches;
 mod end_relief;

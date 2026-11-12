@@ -171,6 +171,19 @@ impl Writer {
         self.append(|file| bevel_gear::encode(file, gear, placement, tolerance))
     }
 
+    /// Append a standalone one-start double-rounded thread shaft.
+    pub fn append_rounded_thread(
+        &mut self,
+        thread: &crate::rounded_thread::Thread,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance_mm: f64,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| rounded_thread::encode(file, thread, placement, tolerance_mm))
+    }
+
     pub fn append_helical_thread(
         &mut self,
         thread: &crate::helical_thread::Thread,
