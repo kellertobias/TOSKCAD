@@ -408,22 +408,56 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "occt")]
     #[test]
     fn cold_apartment_plan_preview_keeps_its_native_dimensions() {
+        cold_apartment_plan_preview(GeometryBackend::OpenCascade);
+    }
+
+    #[test]
+    fn cold_rust_apartment_plan_preview_matches_full_rust_evaluation() {
+        cold_apartment_plan_preview(GeometryBackend::Rust);
+    }
+
+    fn cold_apartment_plan_preview(geometry_backend: GeometryBackend) {
         let mut session = open_example("apartment.tcd");
         let document = session.document();
         let book = drawings::books(document).next().unwrap();
         let drawing = drawings::read(document, book).unwrap();
         let mut page = drawing.pages[0].clone();
         assert!(multicad_model::drawing_preview_sources(document, page.id).is_some());
-        let mut backend = Backend::with_cache(None);
+        let mut backend = Backend::with_cache_and_backend(None, geometry_backend);
         let start = Instant::now();
         let evaluation = preview(&mut backend, &session, page.id);
+        let cold = start.elapsed();
         eprintln!(
-            "Cold apartment {} backend preview: {:.3?}",
+            "Cold apartment {} {geometry_backend:?} backend preview: {cold:.3?}",
             page.number,
-            start.elapsed()
         );
+        // CAD-317: the shipped Rust kernel previews AP-101 within five seconds
+        // in an optimized build. The optional OpenCascade build is not bounded.
+        if matches!(geometry_backend, GeometryBackend::Rust) && !cfg!(debug_assertions) {
+            assert!(cold < Duration::from_secs(5), "{cold:?}");
+        }
+        let roots = multicad_model::drawing_preview_sources(document, page.id).unwrap();
+        let scoped = Compiler {
+            omit_display: true,
+            ..Default::default()
+        }
+        .compile_sources_with_backend(document, session.revision(), &roots, geometry_backend, None)
+        .unwrap();
+        let started = Instant::now();
+        let scoped_page = scoped
+            .drawing_page_preview(document, session.revision(), &Default::default(), page.id)
+            .unwrap();
+        eprintln!(
+            "Scoped {geometry_backend:?} compile of {} sources: {:.0}ms, projection and dimensions: {:.3?}",
+            roots.len(),
+            scoped.timings().total_ms,
+            started.elapsed()
+        );
+        assert_eq!(scoped_page.views, evaluation.views);
+        assert_eq!(scoped_page.annotations, evaluation.annotations);
         assert_eq!(evaluation.annotations.len(), 8);
         assert!(
             evaluation.annotations.values().all(|annotation| matches!(
@@ -444,7 +478,9 @@ mod tests {
         };
         let providers = DrawingProviders::default();
         let revision = session.revision();
-        let model = compiler.compile(document, revision).unwrap();
+        let model = compiler
+            .compile_with_backend(document, revision, geometry_backend, None)
+            .unwrap();
         let started = Instant::now();
         for view in &page.views {
             assert_eq!(
@@ -462,7 +498,7 @@ mod tests {
             }
         }
         eprintln!(
-            "Full model compile: {:.0}ms, projection: {projection:.3?}, dimensions: {:.3?}",
+            "Full {geometry_backend:?} model compile: {:.0}ms, projection: {projection:.3?}, dimensions: {:.3?}",
             model.timings().total_ms,
             started.elapsed()
         );
@@ -500,7 +536,7 @@ mod tests {
         assert!(multicad_model::drawing_preview_sources(document, page.id).is_some());
         let actual = preview(&mut backend, &session, page.id);
         let full = compiler
-            .compile(document, revision)
+            .compile_with_backend(document, revision, geometry_backend, None)
             .unwrap()
             .drawing_page(document, revision, &providers, page.id)
             .unwrap();
@@ -511,8 +547,18 @@ mod tests {
         assert_eq!(actual.annotations, full.annotations);
     }
 
+    #[cfg(feature = "occt")]
     #[test]
     fn cold_expanded_apartment_plan_preview() {
+        cold_expanded_apartment_plan(GeometryBackend::OpenCascade);
+    }
+
+    #[test]
+    fn cold_expanded_rust_apartment_plan_preview() {
+        cold_expanded_apartment_plan(GeometryBackend::Rust);
+    }
+
+    fn cold_expanded_apartment_plan(geometry_backend: GeometryBackend) {
         use multicad_core::document::EntityData;
         let mut session = open_example("apartment.tcd");
         let book = drawings::books(session.document()).next().unwrap();
@@ -567,10 +613,13 @@ mod tests {
         .unwrap();
         session.commit(prepared).unwrap();
 
-        let mut backend = Backend::with_cache(None);
+        let mut backend = Backend::with_cache_and_backend(None, geometry_backend);
         let started = Instant::now();
         let result = preview(&mut backend, &session, page.id);
         let elapsed = started.elapsed();
+        if matches!(geometry_backend, GeometryBackend::Rust) && !cfg!(debug_assertions) {
+            assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+        }
         assert!(
             matches!(&result.views[&page.views[0].id], drawings::ViewEvaluation::Ready { vectors, .. } if !vectors.is_empty())
         );
@@ -582,7 +631,7 @@ mod tests {
             ))
         );
         eprintln!(
-            "Expanded AP-101 cold backend preview: {elapsed:.3?}, {original_count} original sources plus {} placed walls",
+            "Expanded AP-101 cold {geometry_backend:?} backend preview: {elapsed:.3?}, {original_count} original sources plus {} placed walls",
             walls.len()
         );
     }
