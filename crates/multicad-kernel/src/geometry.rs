@@ -990,7 +990,14 @@ impl Solid {
             match prism.subtract_cylinder(feature, circle, subtract(bottom, z)?, subtract(top, z)?)
             {
                 Ok(next) => next,
-                Err(multicad_rust_kernel::prism::PrismError::NotThrough) => return Ok(None),
+                // The general blind-pocket provider currently accepts only
+                // rectilinear stock. Keep the through-cut refusal on rounded
+                // stock instead of losing it in an unrelated slot provider.
+                Err(multicad_rust_kernel::prism::PrismError::NotThrough)
+                    if prism.rounded_end().is_none() =>
+                {
+                    return Ok(None);
+                }
                 Err(reason) => {
                     return Err(error(
                         "cylindrical cut",
