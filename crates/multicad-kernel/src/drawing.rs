@@ -284,6 +284,7 @@ pub fn project_drawing(
                 .or_else(|| panel::project_chamfered_bores(input, options))
                 .or_else(|| panel::project_normal_sweep(input, options))
                 .or_else(|| panel::project_spur_gear(input, options))
+                .or_else(|| panel::project_internal_ring(input, options))
         {
             return projection;
         }

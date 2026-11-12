@@ -571,6 +571,19 @@ impl Writer {
         self.append(|file| spur_gear::encode(file, profile, placement, tolerance_mm))
     }
 
+    /// Append an exact internal ring gear with certified cubic flanks.
+    pub fn append_internal_ring(
+        &mut self,
+        ring: &crate::spur_gear::internal::Ring,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance_mm: f64,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| spur_gear::encode_internal(file, ring, placement, tolerance_mm))
+    }
+
     /// Append an exact normal sweep with certified paired through-openings.
     pub fn append_pierced_normal_sweep(
         &mut self,

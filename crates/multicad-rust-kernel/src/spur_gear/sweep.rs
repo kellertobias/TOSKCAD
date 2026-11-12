@@ -76,7 +76,7 @@ impl Edge {
             .collect())
     }
 
-    fn segment_count(self, options: Tessellation) -> Result<usize, MeshError> {
+    pub(super) fn segment_count(self, options: Tessellation) -> Result<usize, MeshError> {
         let count = match self {
             Self::Planar(edge) => match edge.radius_mm().zip(edge.signed_sweep_rad()) {
                 Some((radius, angle)) => options.arc_segments(radius, angle)?.max(2),

@@ -71,7 +71,7 @@ pub use normal_sweep::write_normal_sweep;
 pub use pierced_sweep::write_pierced_normal_sweep;
 pub use planar_union::{supports_planar_union, write_planar_union};
 pub use spline_sweep::write_spline_sweep;
-pub use spur_gear::{SPUR_STEP_MAX_ERROR_MM, write_spur_gear};
+pub use spur_gear::{SPUR_STEP_MAX_ERROR_MM, write_internal_ring, write_spur_gear};
 use stadium::StadiumTrim;
 pub use stadium::write_stadium_prism;
 pub use warped_union::{supports_warped_union, write_warped_union};

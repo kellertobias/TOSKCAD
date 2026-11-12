@@ -1,7 +1,7 @@
 //! Bounded positive-clearance and strict common-interior proofs on exact
 //! external spur outlines. Chords carry analytic error tubes and never
 //! replace either manufacturing boundary.
-use super::{Edge, Point, Profile, add, normal_sweep, scale, sub};
+use super::{Edge, Point, Profile, ToothEdge, add, normal_sweep, scale, sub};
 use crate::revolution::{cross, dot, length};
 
 const MAX_CHORDS: usize = 32_768;
@@ -159,10 +159,26 @@ impl Rim {
         tolerance: f64,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Self, Error> {
+        Self::from_outline(
+            profile.outline(),
+            profile.bore_radius_mm().unwrap_or(0.),
+            placement,
+            tolerance,
+            interrupt,
+        )
+    }
+
+    fn from_outline(
+        outline: &[ToothEdge],
+        bore_mm: f64,
+        placement: Placement,
+        tolerance: f64,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Self, Error> {
         let mut points = Vec::new();
-        let mut endpoints = Vec::with_capacity(profile.outline().len());
+        let mut endpoints = Vec::with_capacity(outline.len());
         let mut arc_fit_error: f64 = 0.;
-        for item in profile.outline() {
+        for item in outline {
             checkpoint(interrupt)?;
             let edge = item.edge;
             if let Edge::Planar(normal_sweep::Edge::Arc { center, a, b, .. }) = edge {
@@ -208,21 +224,24 @@ impl Rim {
             tube_mm: tolerance + representation_error + guard_mm + placement.uncertainty_mm,
             guard_mm,
             placement,
-            bore_mm: profile.bore_radius_mm().unwrap_or(0.) * (1. + 4e-12),
+            bore_mm: bore_mm * (1. + 4e-12),
         })
     }
 
     fn contains_strictly(&self, point: Point) -> bool {
         let margin = self.tube_mm + self.guard_mm;
-        if length(sub(point, self.placement.center_mm)) <= self.bore_mm + margin {
-            return false;
-        }
+        length(sub(point, self.placement.center_mm)) > self.bore_mm + margin
+            && self.winding(point, margin) == Some(true)
+    }
+
+    /// Whether the sampled ring encloses a point beyond every chord tube.
+    fn winding(&self, point: Point, margin: f64) -> Option<bool> {
         let point_chord = Chord::new(point, point);
         let mut inside = false;
         for chord in &self.chords {
             if !chord.bounds.apart(point_chord.bounds, margin) && !chord.clear(point_chord, margin)
             {
-                return false;
+                return None;
             }
             let [a, b] = chord.ends;
             if (a[1] > point[1]) != (b[1] > point[1])
@@ -231,7 +250,7 @@ impl Rim {
                 inside = !inside;
             }
         }
-        inside
+        Some(inside)
     }
 }
 
@@ -280,6 +299,16 @@ fn boundaries_clear(
     {
         return Ok(false);
     }
+    chords_clear(a, b, margin, pair_budget, interrupt)
+}
+
+fn chords_clear(
+    a: &Rim,
+    b: &Rim,
+    margin: f64,
+    pair_budget: usize,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<bool, Error> {
     let right = b
         .chords
         .iter()
@@ -310,16 +339,17 @@ fn pitch_witness(a: &Profile, b: &Profile, placements: [Placement; 2]) -> Point 
     let delta = sub(centers[1], centers[0]);
     // Only a candidate: the winding tests certify material membership. The
     // midpoint between the two tips is near the nominal pitch contact.
-    let tip = |profile: &Profile| {
-        profile
-            .outline()
-            .iter()
-            .find(|edge| edge.role == super::ToothRole::Tip)
-            .map_or(profile.root_radius_mm, |edge| length(edge.edge.point(0.)))
-    };
     let distance = length(delta);
-    let offset = (distance + tip(a) - tip(b)) * 0.5;
+    let offset = (distance + tip_radius(a) - tip_radius(b)) * 0.5;
     add(centers[0], scale(delta, offset / distance))
+}
+
+fn tip_radius(profile: &Profile) -> f64 {
+    profile
+        .outline()
+        .iter()
+        .find(|edge| edge.role == super::ToothRole::Tip)
+        .map_or(profile.root_radius_mm, |edge| length(edge.edge.point(0.)))
 }
 
 /// Certify one fixed pair pose. A result only applies to the exact outlined
@@ -366,7 +396,9 @@ fn certify_with_uncertainty(
 }
 
 mod chevron;
+mod internal;
 pub use chevron::certify_herringbone;
+pub use internal::certify_internal;
 
 #[cfg(test)]
 mod tests;
