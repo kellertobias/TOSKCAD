@@ -9,7 +9,7 @@ use crate::{
     },
 };
 
-mod import;
+pub(super) mod import;
 mod matcher;
 pub use matcher::rounded_thread_import_matches;
 #[derive(Clone, Debug)]
@@ -58,6 +58,35 @@ pub(super) fn verify_member(
     [origin, u, v]: [Point; 3],
     error: Option<f64>,
 ) -> Result<f64> {
+    verify_material(shell, id, thread, [origin, u, v], error, None)
+}
+pub(super) fn verify_bore_member(
+    shell: &mut Shell<'_, '_>,
+    id: u32,
+    bore: &crate::rounded_thread::ThroughBore,
+    frame: [Point; 3],
+    error: Option<f64>,
+) -> Result<f64> {
+    if bore.radius_mm() - bore.thread().spec().major_radius_mm <= 2. * shell.tolerance.min(1e-7) {
+        return Err(ReadError::Limit);
+    }
+    verify_material(
+        shell,
+        id,
+        bore.thread(),
+        frame,
+        error,
+        Some(bore.radius_mm()),
+    )
+}
+fn verify_material(
+    shell: &mut Shell<'_, '_>,
+    id: u32,
+    thread: &Thread,
+    [origin, u, v]: [Point; 3],
+    error: Option<f64>,
+    stock: Option<f64>,
+) -> Result<f64> {
     require(
         origin.into_iter().chain(u).chain(v).all(f64::is_finite)
             && (dot(u, u) - 1.).abs() <= 1e-10
@@ -69,16 +98,19 @@ pub(super) fn verify_member(
     let splines = prepare(thread, origin, shell.tolerance).map_err(helical::step_error)?;
     let proof = Proof {
         error,
-        extent: thread.spec().major_radius_mm.max(thread.spec().length_mm),
+        extent: stock
+            .unwrap_or(thread.spec().major_radius_mm)
+            .max(thread.spec().length_mm),
     };
     let world = |[x, y]: Point2, z: f64| {
         std::array::from_fn(|i| origin[i] + u[i] * x + v[i] * y + normal[i] * z)
     };
     let ids = shell.member_faces(id)?;
-    require(ids.len() == 7)?;
+    let count = 7 + usize::from(stock.is_some());
+    require(ids.len() == count)?;
     let mut available = ids.into_iter().collect::<BTreeSet<_>>();
-    require(available.len() == 7)?;
-    let mut selected = Vec::with_capacity(7);
+    require(available.len() == count)?;
+    let mut selected = Vec::with_capacity(count);
     // A finite endpoint proposes a unique band, but cannot qualify it: the
     // complete net, knot structure, curve controls and incidence follow below.
     for b in &splines.bands {
@@ -112,6 +144,9 @@ pub(super) fn verify_member(
         let mut candidates = Vec::new();
         for &id in &available {
             let (surface, _, _) = face(shell, id)?;
+            if stock.is_some() && shell.simple(surface)?.name == "CYLINDRICAL_SURFACE" {
+                continue;
+            }
             let [Value::String(_), a] = shell.args(surface, "PLANE")? else {
                 return Err(ReadError::Invalid);
             };
@@ -126,8 +161,14 @@ pub(super) fn verify_member(
         selected.push(id);
         cap_axes.push(axis);
     }
+    let cylinder = if stock.is_some() {
+        Some(remaining_cylinder(&mut available)?)
+    } else {
+        None
+    };
     require(available.is_empty())?;
     let forward = thread.spec().left_hand;
+    let wall_forward = forward ^ stock.is_some();
     let quadrature = helical::volume::Quadrature::new();
     let mut flux = 0.;
     let mut rims = [[0_u32; 5]; 2];
@@ -138,7 +179,7 @@ pub(super) fn verify_member(
         let [bound] = bounds[..] else {
             return Err(ReadError::Invalid);
         };
-        require(outward == forward)?;
+        require(outward == wall_forward)?;
         let [
             Value::String(_),
             Value::Number(d1),
@@ -177,7 +218,7 @@ pub(super) fn verify_member(
             })
             .collect::<Result<Vec<_>>>()?;
         flux += quadrature.spline_flux(&controls, origin, axis);
-        let uses = orient(&ring(shell, bound, true)?, forward);
+        let uses = orient(&ring(shell, bound, true)?, wall_forward);
         let [(start, true), (next, true), (end, false), (previous, false)] = uses[..] else {
             return Err(ReadError::Invalid);
         };
@@ -225,27 +266,112 @@ pub(super) fn verify_member(
         }
     }
     require((0..5).all(|i| rails[i][1] == rails[(i + 1) % 5][0]))?;
+    let mut cylinder_rims = [0; 2];
+    let mut cap_origins = [[0.; 3]; 2];
     for end in 0..2 {
         let (surface, outward, bounds) = face(shell, selected[5 + end])?;
-        let [bound] = bounds[..] else {
-            return Err(ReadError::Invalid);
-        };
         require(outward)?;
-        let _ = surface; // Its PLANE schema/axis was validated during selection.
-        proof.axis(
+        let _ = surface;
+        let (bound, outer) = if stock.is_some() {
+            let [a, b] = bounds[..] else {
+                return Err(ReadError::Invalid);
+            };
+            match (shell.simple(a)?.name, shell.simple(b)?.name) {
+                ("FACE_OUTER_BOUND", "FACE_BOUND") => (b, Some(a)),
+                ("FACE_BOUND", "FACE_OUTER_BOUND") => (a, Some(b)),
+                _ => return Err(ReadError::Invalid),
+            }
+        } else {
+            let [bound] = bounds[..] else {
+                return Err(ReadError::Invalid);
+            };
+            (bound, None)
+        };
+        let cap = proof.axis(
             shell,
             &Value::Reference(cap_axes[end]),
             world([0.; 2], [0., length][end]),
             normal.map(|n| if end == 1 { n } else { -n }),
             u,
         )?;
-        let actual = orient(&ring(shell, bound, true)?, (end == 1) == forward);
-        let expected = rims[end].map(|edge| (edge, true));
-        require(actual == expected)?;
+        cap_origins[end] = cap.origin;
+        super::rounded_thread_bore::verify_direction(
+            shell,
+            cap.normal,
+            axis.map(|n| if end == 1 { n } else { -n }),
+            stock.unwrap_or(thread.spec().major_radius_mm),
+        )?;
+        let actual = orient(
+            &ring(shell, bound, stock.is_none())?,
+            (end == 1) == wall_forward,
+        );
+        require(actual == rims[end].map(|edge| (edge, true)))?;
+        if let Some(bound) = outer {
+            let rim = ring(shell, bound, true)?;
+            let [(edge, sense)] = rim[..] else {
+                return Err(ReadError::Invalid);
+            };
+            require(sense == (end == 1))?;
+            let circle = outer_circle(shell, edge)?;
+            require(
+                proof.equal(circle.center_mm, world([0.; 2], [0., length][end]))
+                    && crate::step_read::length(sub(circle.normal, normal)) < proof.angular()
+                    && Some(circle.radius_mm) == stock,
+            )?;
+            super::rounded_thread_bore::verify_direction(
+                shell,
+                circle.normal,
+                axis,
+                stock.expect("checked radius"),
+            )?;
+            cylinder_rims[end] = edge;
+        }
     }
-    let volume = if forward { flux } else { -flux };
+    let tool_volume = if forward { flux } else { -flux };
+    require(tool_volume.is_finite() && tool_volume > 0.)?;
+    let volume = if let Some(radius) = stock {
+        let id = cylinder.expect("checked cylindrical closure");
+        let (r, axis) = helical::check_cylinder_with_proof(
+            proof,
+            shell,
+            id,
+            cylinder_rims,
+            (radius, true),
+            [origin, normal, u],
+        )?;
+        super::rounded_thread_bore::verify_outer_frame(
+            shell,
+            id,
+            cap_origins,
+            [origin, u, v],
+            r,
+            length,
+        )?;
+        std::f64::consts::PI * r * r * dot(sub(cap_origins[1], cap_origins[0]), axis) - tool_volume
+    } else {
+        tool_volume
+    };
     require(volume.is_finite() && volume > 0.)?;
     Ok(volume)
+}
+
+// The wall/cap selector consumes its proved faces before handing ownership of
+// exactly one remaining cylindrical support to the closure proof.
+/// A receiver's outer trim must be an actual full circle, not merely an
+/// arbitrary successfully parsed analytic edge.
+pub(super) fn outer_circle(shell: &mut Shell<'_, '_>, edge: u32) -> Result<CircleEdge> {
+    shell.edge(edge)?;
+    let Curve::Circle(circle) = shell.edges[&edge].curve else {
+        return Err(ReadError::Invalid);
+    };
+    Ok(circle)
+}
+
+pub(super) fn remaining_cylinder(available: &mut BTreeSet<u32>) -> Result<u32> {
+    if available.len() != 1 {
+        return Err(ReadError::Invalid);
+    }
+    Ok(available.pop_first().expect("checked remainder"))
 }
 
 #[cfg(test)]

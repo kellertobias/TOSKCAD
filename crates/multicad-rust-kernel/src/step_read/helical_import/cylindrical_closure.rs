@@ -57,13 +57,13 @@ fn endpoint_error(a: [Point; 2], b: [Point; 2], la: f64, lb: f64) -> f64 {
     })
 }
 
-pub(super) struct Cylinder {
-    pub(super) frame: [Point; 3],
-    pub(super) radius_mm: f64,
-    pub(super) axial_mm: [f64; 2],
+pub(in crate::step_read) struct Cylinder {
+    pub(in crate::step_read) frame: [Point; 3],
+    pub(in crate::step_read) radius_mm: f64,
+    pub(in crate::step_read) axial_mm: [f64; 2],
 }
 
-pub(super) fn error(a: Cylinder, b: Cylinder) -> f64 {
+pub(in crate::step_read) fn error(a: Cylinder, b: Cylinder) -> f64 {
     let [origin, u, v] = a.frame;
     let na = cross(u, v);
     let nb = cross(b.frame[1], b.frame[2]);

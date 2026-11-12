@@ -114,17 +114,13 @@ fn plane(shell: &Shell<'_, '_>, id: u32) -> Result<Plane> {
     shell.placement(reference(axis)?)
 }
 
-pub(super) fn read_member(
-    shell: &mut Shell<'_, '_>,
-    id: u32,
-) -> Result<(Readback, ImportedRoundedThread)> {
-    let faces = shell.member_faces(id)?;
-    if faces.len() != 7 {
-        return Err(ReadError::Unsupported);
-    }
+pub(in crate::step_read) fn candidate(
+    shell: &Shell<'_, '_>,
+    faces: &[u32],
+) -> Result<ImportedRoundedThread> {
     let mut grids = Vec::with_capacity(5);
     let mut caps = Vec::with_capacity(2);
-    for face_id in faces {
+    for &face_id in faces {
         let (surface, _, _) = face(shell, face_id)?;
         match shell.simple(surface)?.name {
             "B_SPLINE_SURFACE_WITH_KNOTS" => grids.push(grid(shell, face_id)?),
@@ -215,6 +211,27 @@ pub(super) fn read_member(
         crate::rounded_thread::Error::Limit => ReadError::Limit,
         _ => ReadError::Invalid,
     })?;
+    Ok(ImportedRoundedThread {
+        thread,
+        origin_mm: origin,
+        u,
+        v,
+    })
+}
+pub(super) fn read_member(
+    shell: &mut Shell<'_, '_>,
+    id: u32,
+) -> Result<(Readback, ImportedRoundedThread)> {
+    let faces = shell.member_faces(id)?;
+    if faces.len() != 7 {
+        return Err(ReadError::Unsupported);
+    }
+    let candidate = candidate(shell, &faces)?;
+    let thread = candidate.thread;
+    let [origin, u, v] = [candidate.origin_mm, candidate.u, candidate.v];
+    let frame = [origin, u, v];
+    let tolerance = shell.tolerance.min(1e-7);
+    let error = tolerance / 16.;
     let volume = verify_member(shell, id, &thread, frame, Some(error))?;
     let mut bounds = [[0.; 3]; 2];
     let normal = cross(u, v);

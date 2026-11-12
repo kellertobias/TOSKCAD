@@ -45,6 +45,8 @@ mod planar_union;
 mod rounded_cylinder;
 pub(crate) mod rounded_thread;
 pub use rounded_thread::{supports_rounded_thread, write_rounded_thread};
+mod rounded_thread_bore;
+pub use rounded_thread_bore::{supports_rounded_thread_bore, write_rounded_thread_bore};
 mod spline_sweep;
 mod spur_gear;
 mod stadium;

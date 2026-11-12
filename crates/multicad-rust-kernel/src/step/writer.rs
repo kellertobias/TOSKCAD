@@ -184,6 +184,19 @@ impl Writer {
         self.append(|file| rounded_thread::encode(file, thread, placement, tolerance_mm))
     }
 
+    /// Append one independently checked double-rounded through receiver.
+    pub fn append_rounded_thread_bore(
+        &mut self,
+        bore: &crate::rounded_thread::ThroughBore,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance: f64,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| rounded_thread_bore::encode(file, bore, placement, tolerance))
+    }
+
     pub fn append_helical_thread(
         &mut self,
         thread: &crate::helical_thread::Thread,

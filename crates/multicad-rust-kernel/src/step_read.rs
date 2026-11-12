@@ -33,9 +33,14 @@ mod part21;
 mod round;
 mod rounded_cylinder;
 mod rounded_thread;
+mod rounded_thread_bore;
 pub use rounded_thread::{
     ImportedRoundedThread, read_rounded_thread, read_rounded_thread_compound,
     rounded_thread_import_matches, verify_rounded_thread,
+};
+pub use rounded_thread_bore::{
+    ImportedRoundedThreadBore, read_rounded_thread_bore, read_rounded_thread_bore_compound,
+    rounded_thread_bore_import_matches, verify_rounded_thread_bore,
 };
 mod sphere;
 mod spline;

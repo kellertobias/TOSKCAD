@@ -736,7 +736,7 @@ pub(super) fn check_axis(
     Ok(frame)
 }
 
-fn check_cylinder_with_proof(
+pub(super) fn check_cylinder_with_proof(
     proof: Proof,
     shell: &mut Shell<'_, '_>,
     id: u32,

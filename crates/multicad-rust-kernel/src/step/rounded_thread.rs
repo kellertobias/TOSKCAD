@@ -224,6 +224,35 @@ fn encode_shell(
     placement: &Placement,
     tolerance: f64,
 ) -> Result<Entity, StepError> {
+    encode_material(file, thread, placement, tolerance, None)
+}
+pub(super) fn encode_bore_shell(
+    file: &mut StepFile,
+    bore: &crate::rounded_thread::ThroughBore,
+    placement: &Placement,
+    tolerance: f64,
+) -> Result<Entity, StepError> {
+    if !tolerance.is_finite() || tolerance <= 0. {
+        return Err(StepError::InvalidGeometry);
+    }
+    if bore.radius_mm() - bore.thread().spec().major_radius_mm <= 2. * tolerance.min(MAX_ERROR) {
+        return Err(StepError::Limit);
+    }
+    encode_material(
+        file,
+        bore.thread(),
+        placement,
+        tolerance,
+        Some(bore.radius_mm()),
+    )
+}
+fn encode_material(
+    file: &mut StepFile,
+    thread: &Thread,
+    placement: &Placement,
+    tolerance: f64,
+    stock: Option<f64>,
+) -> Result<Entity, StepError> {
     let ThreadSplines {
         bands,
         axial,
@@ -253,9 +282,9 @@ fn encode_shell(
             helical::curve(file, &axial, [rings[0][i], rings[1][i]], &mut points)
         })
         .collect::<Vec<_>>();
-    let forward = thread.spec().left_hand;
+    let forward = thread.spec().left_hand ^ stock.is_some();
     let mut caps: [Vec<Entity>; 2] = std::array::from_fn(|_| Vec::with_capacity(5));
-    let mut faces = Vec::with_capacity(7);
+    let mut faces = Vec::with_capacity(7 + usize::from(stock.is_some()));
     for (i, b) in bands.iter().enumerate() {
         let next = (i + 1) % 5;
         let rims = [0, 1].map(|end| {
@@ -283,6 +312,17 @@ fn encode_shell(
         let support = helical::surface(file, b, &axial, &heights, placement);
         faces.push(file.face_on(&[bound], support, forward));
     }
+    let cylinder = stock
+        .map(|radius| {
+            CylindricalTrim::new(
+                file,
+                [0., length].map(|z| placement.point_f64([0.; 2], z)),
+                placement.normal,
+                placement.u,
+                radius,
+            )
+        })
+        .transpose()?;
     for (end, rims) in caps.iter().enumerate() {
         let top = end == 1;
         let edges = if top == forward {
@@ -295,10 +335,18 @@ fn encode_shell(
                 .map(|&e| file.oriented_edge(e, false))
                 .collect()
         };
-        let bound = file.bound(&edges, true);
+        let bound = file.bound(&edges, stock.is_none());
+        let mut bounds = Vec::with_capacity(1 + usize::from(stock.is_some()));
+        if let Some(cylinder) = &cylinder {
+            bounds.push(cylinder.cap_bound(file, top, true));
+        }
+        bounds.push(bound);
         let center = file.point(placement.point_f64([0.; 2], [0., length][end]));
         let normal = placement.normal.map(|n| if top { n } else { -n });
-        faces.push(file.face(&[bound], center, normal, placement.u));
+        faces.push(file.face(&bounds, center, normal, placement.u));
+    }
+    if let Some(cylinder) = cylinder {
+        faces.push(cylinder.wall(file, true));
     }
     Ok(file.solid(&faces))
 }
