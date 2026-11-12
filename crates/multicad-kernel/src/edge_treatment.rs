@@ -194,6 +194,25 @@ impl Solid {
                             topology,
                         )
                     }
+                    _ if edges.len() > 1
+                        && edges.iter().all(|edge| {
+                            topology.elements.iter().any(|element| {
+                                element.key == edge.key
+                                    && matches!(
+                                        element.geometry,
+                                        Some(AnalyticGeometry::Line { .. })
+                                    )
+                            })
+                        }) =>
+                    {
+                        self.rust_chamfer_parallel_box_edges(
+                            edges,
+                            distance_mm,
+                            feature,
+                            policy,
+                            topology,
+                        )
+                    }
                     _ => self.chamfer_polygon_bores(edges, distance_mm, policy),
                 },
                 EdgeTreatment::Fillet { radius_mm } => {

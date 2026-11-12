@@ -1214,3 +1214,164 @@ fn rust_box_fillet_keeps_parallel_corner_origins_and_round_trips_step() {
     assert_eq!(session.document(), &original);
     assert_eq!(session.revision() + 1, revision);
 }
+
+#[test]
+fn parallel_box_chamfers_rebuild_both_named_faces_through_edits_history_and_reopen() {
+    use multicad_core::references::{Resolution, resolve};
+    let (mut session, input, first) = fixture();
+    let original = session.document().clone();
+    let initial = compile(&session);
+    let topology = &initial.snapshot().shapes[&input.producer].topology;
+    let second = topology
+        .elements
+        .iter()
+        .find(|element| {
+            matches!(element.geometry, Some(AnalyticGeometry::Line{a_mm,b_mm})
+            if element.key.kind==TopologyKind::Edge && a_mm[0]==0. && b_mm[0]==0.
+                && a_mm[1]==0. && b_mm[1]==0. && a_mm[2]!=b_mm[2])
+        })
+        .unwrap();
+    let selections = vec![
+        first,
+        GeometryIntent::capture(topology, second.key).unwrap(),
+    ];
+    let mut request = EdgeTreatmentRequest::new(
+        input.clone(),
+        EdgeTreatmentParameters {
+            profile: EdgeTreatmentProfile::Chamfer,
+            size: length(2.),
+        },
+        selections.clone(),
+    );
+    let prepared =
+        model::prepare_edge_treatment(&session, session.revision(), actor(), &request).unwrap();
+    let preview = Compiler::default()
+        .compile(prepared.prepared.document(), session.revision() + 1)
+        .unwrap();
+    near(
+        preview.solid(input.body).unwrap().volume_mm3().unwrap(),
+        5960.,
+    );
+    assert_eq!(session.document(), &original);
+    session.commit(prepared.prepared).unwrap();
+    let topology = &preview.snapshot().shapes[&request.feature].topology;
+    let generated: Vec<_> = selections
+        .iter()
+        .map(|selection| {
+            let origin = Origin {
+                source: request.feature,
+                role: format!("edge/{}", selection.id),
+            };
+            let face = topology
+                .elements
+                .iter()
+                .find(|element| {
+                    element.key.kind == TopologyKind::Face && element.origins.contains(&origin)
+                })
+                .unwrap();
+            GeometryIntent::capture(topology, face.key).unwrap()
+        })
+        .collect();
+    let applied = session.document().clone();
+    request.parameters.size = length(3.);
+    let edit = model::prepare_edge_treatment_edit(
+        &session,
+        session.revision(),
+        actor(),
+        request.feature,
+        &request.parameters,
+        &selections,
+    )
+    .unwrap();
+    session.commit(edit.prepared).unwrap();
+    let changed = compile(&session);
+    near(
+        changed.solid(input.body).unwrap().volume_mm3().unwrap(),
+        5910.,
+    );
+    for intent in &generated {
+        assert!(matches!(
+            resolve(
+                intent,
+                &changed.snapshot().shapes[&request.feature].topology,
+                session.revision()
+            ),
+            Resolution::Resolved { .. }
+        ));
+    }
+    session.undo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &applied);
+    session.redo(session.revision(), actor()).unwrap();
+    let mut width = session
+        .document()
+        .entities()
+        .find(|e| e.name == "width")
+        .unwrap()
+        .clone();
+    let EntityData::Parameter { expression, .. } = &mut width.data else {
+        panic!()
+    };
+    *expression = "40".into();
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Resize chamfer stock".into(),
+            edits: vec![Mutation::Replace(width)],
+        })
+        .unwrap();
+    let resized = compile(&session);
+    near(
+        resized.solid(input.body).unwrap().volume_mm3().unwrap(),
+        7910.,
+    );
+    for intent in &generated {
+        assert!(matches!(
+            resolve(
+                intent,
+                &resized.snapshot().shapes[&request.feature].topology,
+                session.revision()
+            ),
+            Resolution::Resolved { .. }
+        ));
+    }
+    let mut bytes = Vec::new();
+    project_file::write(
+        &ProjectFile::new(session.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let reopened = project_file::read(
+        &mut std::io::Cursor::new(bytes),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    let reopened = Session::new(reopened.project.document).unwrap();
+    near(
+        compile(&reopened)
+            .solid(input.body)
+            .unwrap()
+            .volume_mm3()
+            .unwrap(),
+        7910.,
+    );
+    let before = session.document().clone();
+    request.parameters.size = length(21.);
+    let invalid = model::prepare_edge_treatment_edit(
+        &session,
+        session.revision(),
+        actor(),
+        request.feature,
+        &request.parameters,
+        &selections,
+    )
+    .unwrap();
+    assert!(
+        Compiler::default()
+            .compile(invalid.prepared.document(), session.revision() + 1)
+            .is_err()
+    );
+    assert_eq!(session.document(), &before);
+}

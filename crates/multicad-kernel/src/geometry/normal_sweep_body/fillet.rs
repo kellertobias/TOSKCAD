@@ -30,6 +30,28 @@ impl Solid {
             return Ok(None);
         }
         let mut source = self.share()?;
+        // Metadata overrides store authored attachment frames in world space.
+        // Resetting only the physical body chart would apply its placement a
+        // second time to those anchors when the treated result is restored.
+        if source.has_authored_metadata_override() {
+            for element in &mut source.provenance {
+                for anchor in &mut element.frames {
+                    anchor.frame = super::super::revolution_body::local_attachment(
+                        frame,
+                        anchor.frame,
+                        self.policy,
+                    )
+                    .map_err(|_| {
+                        error(
+                            "edge treatment",
+                            GeometryErrorKind::Unsupported,
+                            "Placed box attachment cannot be preserved within model tolerance",
+                        )
+                    })?;
+                }
+            }
+        }
+        source.retained_placement = None;
         match &mut source.body {
             SolidBody::Prism(_, frame)
             | SolidBody::Linear(_, frame)

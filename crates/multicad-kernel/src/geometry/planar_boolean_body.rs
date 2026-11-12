@@ -25,6 +25,7 @@ mod intersection;
 mod intrinsic_query;
 mod loft;
 mod miter_sweep;
+mod multi_chamfer;
 mod scale;
 mod straight_profile;
 
