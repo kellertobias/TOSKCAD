@@ -3,6 +3,7 @@ use super::*;
 use crate::{DistanceWitness, MinimumDistance};
 use multicad_rust_kernel::{cylinder::parallel_prism, linear_sweep::Sweep};
 
+mod filled;
 type Point = [f64; 3];
 type Section = (Vec<Vec<[f64; 2]>>, f64, PlaneFrame, bool);
 fn norm(p: Point) -> f64 {
@@ -58,6 +59,9 @@ impl Solid {
         &self,
         other: &Self,
     ) -> Option<Result<(MinimumDistance, f64), GeometryError>> {
+        if let Some(result) = self.rust_parallel_filled_cylinders(other) {
+            return Some(result);
+        }
         if !self.uses_rust_geometry() || !other.uses_rust_geometry() {
             return None;
         }

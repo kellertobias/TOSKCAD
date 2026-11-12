@@ -38,6 +38,8 @@ use std::{
 };
 
 mod architecture;
+mod solid_pairs;
+use solid_pairs::{InspectPartPairArgs, inspect_part_pair};
 mod cabinetry;
 mod wood_boxes;
 use wood_boxes::{
@@ -340,6 +342,9 @@ tools! {
     "set_helical_tube_cut" => HelicalTubeCutArgs, "Create or edit helical tube cut", false,
         "Cut an exact cylinder with a right-handed circular tube centered on its outside radius. Use target_part to create or feature to edit; provide the complete typed recipe each time. Heights and start_angle are in the cylinder's local frame, with zero height at its bottom and phase zero at its authored seam. The tube must start between the caps, clear adjacent turns and exit completely through the top cap. Requires the Rust backend. A failed or cancelled candidate changes nothing.",
         set_helical_tube_cut;
+    "inspect_part_pair" => InspectPartPairArgs, "Inspect whole Part pair", true,
+        "Read the current complete solids of two Parts and report finite minimum distance, occupied common volume and bounded physical witnesses. Dimensions are in millimeters; optional contact_tolerance carries a length unit. Positive material is never rounded into contact. total_solutions is null and witnesses_complete is false for a continuum or an unenumerated solution set. Unsupported geometry or unresolved near-contact is refused; no source or selection changes. This queries Part solids, not occurrence placement overrides.",
+        inspect_part_pair;
     "evaluate_model" => NoArgs, "Evaluate model", true,
         "Evaluate the complete model with the native kernel and report every final part (producing feature, solid count, volume in mm³, bounds in mm) and every placed instance (component, solid count, volume, bounds), plus reference diagnostics. Evaluation failures are returned as structured errors.",
         evaluate_model;

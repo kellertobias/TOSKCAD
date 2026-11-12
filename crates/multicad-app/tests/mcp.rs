@@ -762,6 +762,7 @@ fn tool_discovery_is_complete_and_schemas_are_objects() {
         "extrude",
         "set_helical_tube_cut",
         "evaluate_model",
+        "inspect_part_pair",
         "undo",
         "redo",
         "history",
@@ -801,12 +802,13 @@ fn tool_discovery_is_complete_and_schemas_are_objects() {
         let requires_revision = tool["inputSchema"]["required"]
             .as_array()
             .is_some_and(|r| r.contains(&json!("expected_revision")));
-        // Mutations need a base revision. Native capture and preview also
-        // guard their source revision without committing a transaction.
+        // Mutations need a base revision. Source-bound reads, capture and
+        // preview also guard their revision without committing a transaction.
         if matches!(
             tool["name"].as_str(),
             Some(
-                "preview_fence"
+                "inspect_part_pair"
+                    | "preview_fence"
                     | "preview_compound_cutout"
                     | "preview_wood_box"
                     | "capture_surface_structure_faces"
@@ -3611,4 +3613,156 @@ fn rust_stdio_rounded_through_receivers_rollback_history_and_blind_reopen() {
         let receipt = reopened.ok("export_step", json!({"part":part,"file_name":"again.step"}));
         close(receipt["readback_volume_mm3"].as_f64().unwrap(), volume);
     }
+}
+
+#[test]
+fn rust_stdio_parallel_cylinder_pair_queries_are_read_only_and_source_guarded() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        document::{Document, EntityId},
+        model::{self, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest, length as mm},
+        project_file::{self, ProjectFile},
+    };
+    let mut source = Session::new(Document::new("Cylinder pair query protocol").unwrap()).unwrap();
+    let mut parts = vec![];
+    for (name, radius, height, origin, crossed) in [
+        ("A", 5., 10., [0., 0., 0.], false),
+        ("separated", 5., 10., [14., 0., 0.], false),
+        ("Contact", 5., 10., [10., 0., 0.], false),
+        ("Overlap", 5., 10., [5., 0., 0.], false),
+        ("Crossing", 5., 10., [0., 0., 0.], true),
+        ("Tiny A", 1., 1., [100., 0., 0.], false),
+        ("Tiny B", 1., 1., [102. - 1e-11, 0., 0.], false),
+    ] {
+        let frame = PrimitiveFrame {
+            origin: origin.map(mm),
+            u: if crossed { [0., 0., 1.] } else { [1., 0., 0.] },
+            v: [0., 1., 0.],
+        };
+        let p = PrimitiveRequest::new(
+            name,
+            PrimitiveParameters::Cylinder {
+                radius: mm(radius),
+                height: mm(height),
+                frame,
+            },
+        );
+        let edit =
+            model::prepare_primitive(&source, source.revision(), Actor::local(Channel::Ui), &p)
+                .unwrap();
+        source.commit(edit.prepared).unwrap();
+        parts.push(p);
+    }
+    let mut boxes = vec![];
+    for x in [300., 301.] {
+        let p = PrimitiveRequest::new(
+            "Consumed-control box",
+            PrimitiveParameters::Box {
+                size: [2.; 3].map(mm),
+                frame: PrimitiveFrame {
+                    origin: [mm(x), mm(0.), mm(0.)],
+                    ..Default::default()
+                },
+            },
+        );
+        let edit =
+            model::prepare_primitive(&source, source.revision(), Actor::local(Channel::Ui), &p)
+                .unwrap();
+        source.commit(edit.prepared).unwrap();
+        boxes.push(p);
+    }
+    let boolean = model::BooleanRequest::new(
+        model::Operation::Join,
+        model::BodyInput {
+            body: boxes[0].body,
+            producer: boxes[0].feature,
+        },
+        vec![model::BodyInput {
+            body: boxes[1].body,
+            producer: boxes[1].feature,
+        }],
+    );
+    let edit = model::prepare_boolean(
+        &source,
+        source.revision(),
+        Actor::local(Channel::Ui),
+        &boolean,
+    )
+    .unwrap();
+    source.commit(edit.prepared).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("pairs.tcd");
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(source.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    std::fs::write(&project, &bytes).unwrap();
+    let args = ["--rust-model", "--project", project.to_str().unwrap()];
+    let mut client = Client::start(&args);
+    let revision = client.revision();
+    let query = |a: usize, b: usize| json!({"expected_revision":revision,"a_part":parts[a].body,"b_part":parts[b].body});
+    let separated = client.ok("inspect_part_pair", query(0, 1));
+    close(separated["minimum_distance_mm"].as_f64().unwrap(), 4.);
+    assert_eq!(separated["relation"], "separated");
+    assert_eq!(separated["common_volume_mm3"], 0.);
+    assert_eq!(separated["total_solutions"], Value::Null);
+    assert_eq!(separated["witnesses_complete"], false);
+    assert_eq!(separated["scope"], "current Part definition coordinates");
+    let contact = client.ok("inspect_part_pair", query(0, 2));
+    assert_eq!(contact["relation"], "contact_within_tolerance");
+    assert_eq!(contact["common_volume_mm3"], 0.);
+    let overlap = client.ok("inspect_part_pair", query(0, 3));
+    assert_eq!(overlap["relation"], "overlapping");
+    close(
+        overlap["common_volume_mm3"].as_f64().unwrap(),
+        10. * (50. * (0.5_f64).acos() - 12.5 * 3_f64.sqrt()),
+    );
+    let mut tiny = query(5, 6);
+    tiny["contact_tolerance"] = length(1e-3);
+    let tiny = client.ok("inspect_part_pair", tiny);
+    assert_eq!(tiny["relation"], "overlapping");
+    assert!(tiny["common_volume_mm3"].as_f64().unwrap() > 0.);
+    let mut stale = query(0, 1);
+    stale["expected_revision"] = json!(revision + 1);
+    assert_eq!(
+        client.fail("inspect_part_pair", stale)["code"],
+        "stale_revision"
+    );
+    let mut missing = query(0, 1);
+    missing["b_part"] = json!(EntityId::new());
+    assert_eq!(
+        client.fail("inspect_part_pair", missing)["code"],
+        "not_found"
+    );
+    let mut invalid = query(0, 1);
+    invalid["a_part"] = json!("invalid-id");
+    client.fail("inspect_part_pair", invalid);
+    let mut invalid_tolerance = query(0, 1);
+    invalid_tolerance["contact_tolerance"] = length(0.);
+    client.fail("inspect_part_pair", invalid_tolerance);
+    assert_eq!(
+        client.fail("inspect_part_pair", query(0, 4))["code"],
+        "unsupported_geometry"
+    );
+    let mut consumed = query(0, 1);
+    consumed["b_part"] = json!(boxes[1].body);
+    let consumed = client.fail("inspect_part_pair", consumed);
+    assert!(
+        consumed["message"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("consum")
+    );
+    assert_eq!(client.revision(), revision);
+    assert_eq!(std::fs::read(&project).unwrap(), bytes);
+    close(
+        client.ok("inspect_part_pair", query(0, 1))["minimum_distance_mm"]
+            .as_f64()
+            .unwrap(),
+        4.,
+    );
 }
