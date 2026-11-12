@@ -169,6 +169,27 @@ impl Solid {
             let start = local(tool_frame.origin);
             let end = local(world_end);
             let radius = cylinder.circle().radius().as_f64();
+            // In this exact signed-cardinal source chart the radial disk has
+            // zero extent along its travel axis. Disjoint axial intervals,
+            // including end-face contact, remove no regularized material.
+            // No tolerance can turn a small positive penetration into contact.
+            let cardinal = axes.iter().all(|axis| {
+                axis.iter().filter(|&&v| v.abs() == 1.).count() == 1
+                    && axis.iter().all(|&v| v == 0. || v.abs() == 1.)
+            });
+            if frame.origin == [0.; 3] && cardinal {
+                let bounds = stock.geometry.bounds();
+                for axis in 0..3 {
+                    if dot(tool_frame.u, axes[axis]) == 0.
+                        && dot(tool_frame.v, axes[axis]) == 0.
+                        && dot(tool_frame.normal(), axes[axis]).abs() == 1.
+                        && (start[axis].max(end[axis]) <= bounds.min[axis]
+                            || start[axis].min(end[axis]) >= bounds.max[axis])
+                    {
+                        return self.share();
+                    }
+                }
+            }
             let origin = tool.cylinder_sketch().map_or_else(
                 || Origin {
                     source: EntityId::from_uuid_bits(cylinder.feature()),

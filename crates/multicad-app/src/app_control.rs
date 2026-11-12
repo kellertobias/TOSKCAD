@@ -368,14 +368,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "occt")]
     fn window_and_headless_control_produce_equivalent_documents() {
+        window_and_headless_equivalence(GeometryBackend::OpenCascade);
+    }
+
+    #[test]
+    fn rust_window_and_headless_control_produce_equivalent_documents() {
+        window_and_headless_equivalence(GeometryBackend::Rust);
+    }
+
+    fn window_and_headless_equivalence(backend: GeometryBackend) {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("private").join("app.sock");
-        let mut control = WindowControl::new(
-            egui::Context::default(),
-            Ok(socket.clone()),
-            GeometryBackend::OpenCascade,
-        );
+        let mut control = WindowControl::new(egui::Context::default(), Ok(socket.clone()), backend);
         control.set_enabled(true).unwrap();
         use std::os::unix::fs::PermissionsExt;
         let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
@@ -399,10 +405,11 @@ mod tests {
             })
         });
 
-        let headless = Headless::new(
+        let headless = Headless::with_geometry_backend(
             Workspace::new(multicad_core::document::Document::new("Untitled").unwrap()).unwrap(),
             None,
             false,
+            backend,
         );
         let call = Call {
             actor: multicad_core::commands::Actor {
@@ -437,18 +444,24 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "occt")]
     fn reviewed_window_changes_preview_natively_and_apply_only_when_accepted() {
+        reviewed_window_changes(GeometryBackend::OpenCascade);
+    }
+
+    #[test]
+    fn rust_reviewed_window_changes_preview_and_apply_only_when_accepted() {
+        reviewed_window_changes(GeometryBackend::Rust);
+    }
+
+    fn reviewed_window_changes(backend: GeometryBackend) {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("private").join("app.sock");
-        let mut control = WindowControl::new(
-            egui::Context::default(),
-            Ok(socket.clone()),
-            GeometryBackend::OpenCascade,
-        );
+        let mut control = WindowControl::new(egui::Context::default(), Ok(socket.clone()), backend);
         control.set_enabled(true).unwrap();
         let mut app = Application::new(Box::new(crate::files::SnapshotStore)).unwrap();
         app.set_external_control(Box::new(control));
-        app.set_scene_backends(Arc::new(|| Box::new(crate::modeling::Backend::new())));
+        app.set_scene_backends(crate::modeling::Backend::factory(backend).unwrap());
         let path = socket.clone();
         let (mut wire, sketch) = pump(&mut app, move || {
             let mut wire = connect(&path);
@@ -501,7 +514,7 @@ mod tests {
         let review = extrude["review"].as_u64().unwrap();
         assert_eq!(app.current().session.revision(), 2);
 
-        // Preview the candidate natively in the viewport without committing.
+        // Preview the candidate through the selected backend without committing.
         app.preview_review(review).unwrap();
         for _ in 0..2000 {
             app.tick_reviews();
@@ -515,7 +528,7 @@ mod tests {
             "{:?}",
             app.review_preview_error()
         );
-        let scene = app.review_preview_scene().expect("native preview scene");
+        let scene = app.review_preview_scene().expect("review preview scene");
         let bounds = scene
             .native_instance_bounds(scene.instances()[0].id)
             .unwrap();
