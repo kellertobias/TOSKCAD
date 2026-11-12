@@ -28,6 +28,22 @@ impl Solid {
         termination: PlaneFrame,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        if !crate::OCCT_LINKED {
+            profile.checked(policy)?;
+            let feature = EntityId::new();
+            let count = profile.outer.len() + profile.holes.iter().map(Vec::len).sum::<usize>();
+            let origins = crate::geometry::construction::origins(feature, count);
+            return Self::rust_extrude_to_planes_named(
+                profile,
+                direction,
+                None,
+                termination,
+                feature,
+                &origins,
+                policy,
+            )?
+            .without_authored_provenance();
+        }
         let source = profile.checked(policy)?;
         let target = termination.checked(policy)?;
         if direction.iter().any(|x| !x.is_finite())
@@ -97,6 +113,17 @@ impl Solid {
                 GeometryErrorKind::Input,
                 "Every exact profile edge needs an authored origin and feature identity",
             ));
+        }
+        if !crate::OCCT_LINKED {
+            return Self::rust_extrude_to_planes_named(
+                profile,
+                direction,
+                None,
+                termination,
+                feature,
+                origins,
+                policy,
+            );
         }
         let mut solid =
             Self::extrude_curved_profile_to_plane(profile, direction, termination, policy)?;

@@ -46,6 +46,9 @@ impl Solid {
         self.has_certified_planar_material()
             || self
                 .linear_body()
+                .is_some_and(|(body, _)| body.has_plane_terminations())
+            || self
+                .linear_body()
                 .and_then(|(body, _)| body.straight_section())
                 .is_some_and(|(rings, _)| rings.len() > 1)
     }

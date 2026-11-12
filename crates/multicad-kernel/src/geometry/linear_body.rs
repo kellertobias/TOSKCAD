@@ -523,6 +523,10 @@ impl LinearBody {
         }
     }
 
+    pub(super) fn has_plane_terminations(&self) -> bool {
+        matches!(self.geometry, Geometry::Trimmed { .. })
+    }
+
     pub(super) fn volume_mm3(&self) -> f64 {
         match &self.geometry {
             Geometry::Ruled(sweep) => sweep.volume_mm3(),
