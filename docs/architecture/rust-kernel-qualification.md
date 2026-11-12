@@ -1,6 +1,6 @@
 # Rust kernel qualification matrix
 
-The Rust-only macOS candidate opens all five bundled projects and publishes their viewport meshes and placed geometry. The production build selects OpenCascade. The native capability inventory and the Rust fixtures define the evidence needed before changing that default. [Viewport worker tests](../../crates/multicad-app/src/modeling/tests.rs) · [Native baseline](kernel-replacement-baseline.md) · [Cutover requirements](https://plans.tokenet.de/CAD/290)
+Normal Cargo builds select the Rust kernel without OpenCascade. The Rust macOS candidate opens all five bundled projects and publishes their viewport meshes and placed geometry. The remaining entries below track feature, exchange, desktop and package qualification; the default change does not complete those gates. Explicit OpenCascade comparisons are optional evidence. [Build decision](0042-rust-production-default.md) · [Viewport worker tests](../../crates/multicad-app/src/modeling/tests.rs) · [Reference baseline](kernel-replacement-baseline.md) · [Cutover requirements](https://plans.tokenet.de/CAD/290)
 
 The signed macOS ARM64 runtime and source archives are pinned at `17f1fb31`. The archive smoke check covers executable identity, linkage, command workflows and saved model receipts. The source tests below cover a later revision. Desktop input-to-frame verification remains open. [Package verifier](../../tools/package-release.mjs)
 

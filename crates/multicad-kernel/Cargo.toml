@@ -8,7 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-default = ["occt"]
+default = []
 occt = ["dep:cxx", "dep:cxx-build", "dep:multicad-native-build"]
 
 [dependencies]

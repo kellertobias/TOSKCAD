@@ -13,7 +13,7 @@ name = "multicad"
 path = "src/main.rs"
 
 [features]
-default = ["occt"]
+default = []
 occt = ["multicad-kernel/occt", "multicad-model/occt", "multicad-mcp/occt"]
 
 [dependencies]
