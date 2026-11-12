@@ -209,47 +209,15 @@ pub(super) fn verify_member(
             return Err(ReadError::Invalid);
         };
         require(outward == forward)?;
-        let [
-            Value::String(_),
-            Value::Number(d1),
-            Value::Number(d2),
-            grid,
-            Value::Enum("UNSPECIFIED"),
-            Value::Enum("F"),
-            Value::Enum("F"),
-            Value::Enum("F"),
-            radial_mults,
-            axial_mults,
-            radial_knots,
-            axial_knots,
-            Value::Enum("UNSPECIFIED"),
-        ] = shell.args(surface, "B_SPLINE_SURFACE_WITH_KNOTS")?
-        else {
-            return Err(ReadError::Invalid);
-        };
-        require(*d1 == DEGREE as f64 && *d2 == DEGREE as f64)?;
-        proof.knots(radial_mults, radial_knots, radial)?;
-        proof.knots(axial_mults, axial_knots, &splines.axial)?;
-        let Value::List(rows) = grid else {
-            return Err(ReadError::Invalid);
-        };
-        require(rows.len() == radial.poles.len())?;
-        let controls = rows
-            .iter()
-            .zip(&radial.poles)
-            .map(|(row, &radial)| {
-                proof.poles(
-                    shell,
-                    row,
-                    splines
-                        .axial
-                        .poles
-                        .iter()
-                        .zip(&splines.heights)
-                        .map(|(&axial, &z)| world(product(radial, axial), z)),
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let controls = tensor_surface(
+            proof,
+            shell,
+            surface,
+            radial,
+            &splines.axial,
+            &splines.heights,
+            [origin, u, v],
+        )?;
         flux += quadrature.spline_flux(&controls, origin, axis);
 
         let uses = ring(shell, bound, true)?;
@@ -527,6 +495,62 @@ pub(super) fn verify_member(
     let volume = outside_volume + if forward { flux } else { -flux };
     require(volume.is_finite() && volume > 0.)?;
     Ok(volume)
+}
+
+pub(super) fn tensor_surface(
+    proof: Proof,
+    shell: &Shell<'_, '_>,
+    surface: u32,
+    radial: &Spline,
+    axial: &Spline,
+    heights: &[f64],
+    [origin, u, v]: [Point; 3],
+) -> Result<Vec<Vec<Point>>> {
+    let normal = cross(u, v);
+    let world = |[x, y]: Point2, z: f64| {
+        std::array::from_fn(|i| origin[i] + u[i] * x + v[i] * y + normal[i] * z)
+    };
+    let [
+        Value::String(_),
+        Value::Number(d1),
+        Value::Number(d2),
+        grid,
+        Value::Enum("UNSPECIFIED"),
+        Value::Enum("F"),
+        Value::Enum("F"),
+        Value::Enum("F"),
+        radial_mults,
+        axial_mults,
+        radial_knots,
+        axial_knots,
+        Value::Enum("UNSPECIFIED"),
+    ] = shell.args(surface, "B_SPLINE_SURFACE_WITH_KNOTS")?
+    else {
+        return Err(ReadError::Invalid);
+    };
+    require(*d1 == DEGREE as f64 && *d2 == DEGREE as f64)?;
+    proof.knots(radial_mults, radial_knots, radial)?;
+    proof.knots(axial_mults, axial_knots, axial)?;
+    let Value::List(rows) = grid else {
+        return Err(ReadError::Invalid);
+    };
+    require(rows.len() == radial.poles.len())?;
+    let controls = rows
+        .iter()
+        .zip(&radial.poles)
+        .map(|(row, &radial)| {
+            proof.poles(
+                shell,
+                row,
+                axial
+                    .poles
+                    .iter()
+                    .zip(heights)
+                    .map(|(&axial, &z)| world(product(radial, axial), z)),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(controls)
 }
 
 pub(super) fn require(condition: bool) -> Result<()> {

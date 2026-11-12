@@ -19,14 +19,17 @@ use multicad_kernel::{
 fn metric_cone_clipping_matches_native_material_at_shallow_root_contact_and_deep_entries() {
     let session = Session::new(Document::new("Conical source characterization").unwrap()).unwrap();
     let policy = GeometryPolicy::default();
-    for (diameter, pitch, left, factor, terminal, posed) in [
-        (3., 0.5, false, 0.1, false, false),
-        (3., 0.5, true, 1., true, false),
-        (6., 1., false, 0.9, true, true),
-        (6., 1., true, 1.2, false, true),
+    for (diameter, pitch, left, factor, terminal, posed, starts) in [
+        (3., 0.5, false, 0.1, false, false, 1),
+        (3., 0.5, true, 1., true, false, 1),
+        (6., 1., false, 0.9, true, true, 1),
+        (6., 1., true, 1.2, false, true, 1),
+        (3., 0.5, false, 0.9, true, true, 2),
+        (6., 1., true, 1.2, false, false, 3),
     ] {
         let resolved = ThreadParameters {
             major_diameter: length(diameter),
+            starts,
             pitch: length(pitch),
             length: length(1.1 * diameter),
             fit: ThreadFit::Metric6gExternal,
@@ -53,7 +56,7 @@ fn metric_cone_clipping_matches_native_material_at_shallow_root_contact_and_deep
             crest_width_mm: resolved.profile.crest_width_mm,
             lower_flank_deg: resolved.profile.lower_flank_deg,
             upper_flank_deg: resolved.profile.upper_flank_deg,
-            starts: 1,
+            starts,
             left_hand: left,
             root_radius_mm: Some(root),
         };
@@ -79,7 +82,7 @@ fn metric_cone_clipping_matches_native_material_at_shallow_root_contact_and_deep
                     lower_flank_deg: spec.lower_flank_deg,
                     upper_flank_deg: spec.upper_flank_deg,
                     radial_taper: 0.,
-                    starts: 1,
+                    starts,
                     left_hand: left,
                 },
                 root_radius_mm: root,
@@ -151,6 +154,62 @@ fn metric_cone_clipping_matches_native_material_at_shallow_root_contact_and_deep
         };
         let native = native.transformed(pose).unwrap();
         assert!(!native.uses_rust_geometry());
+        let frame = PlaneFrame {
+            origin: pose.translation_mm,
+            u: std::array::from_fn(|i| pose.rotation[i][0]),
+            v: std::array::from_fn(|i| pose.rotation[i][1]),
+        };
+        let step = multicad_kernel::rust_kernel::step::write_thread_entry_chamfer(
+            &body,
+            frame.origin,
+            frame.u,
+            frame.v,
+            policy.linear_tolerance_mm,
+        )
+        .unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "multicad-entry-chamfer-{diameter}-{factor}-{left}-{terminal}-{posed}-{starts}.step"
+        ));
+        std::fs::write(&path, step).unwrap();
+        eprintln!(
+            "Native chamfer STEP {diameter} factor{factor} left{left} tail{terminal} pose{posed} starts{starts}: {}",
+            path.display()
+        );
+        let decoded = Solid::read_step(&path, policy).unwrap();
+        assert!(!decoded.uses_rust_geometry());
+        assert_eq!(decoded.solid_count().unwrap(), 1);
+        let decoded_volume = decoded.volume_mm3().unwrap();
+        let expected_volume = native.volume_mm3().unwrap();
+        assert!(
+            (decoded_volume - expected_volume).abs() <= 2e-6 * expected_volume + 1e-6,
+            "STEP volume {decoded_volume} source {expected_volume}"
+        );
+        let decoded_area = decoded
+            .faces()
+            .unwrap()
+            .into_iter()
+            .map(|face| face.area_mm2)
+            .sum::<f64>();
+        let expected_area = native
+            .faces()
+            .unwrap()
+            .into_iter()
+            .map(|face| face.area_mm2)
+            .sum::<f64>();
+        assert!(
+            (decoded_area - expected_area).abs() <= 2e-6 * expected_area + 1e-6,
+            "STEP area {decoded_area} source {expected_area}"
+        );
+        let a = decoded.bounds().unwrap();
+        let b = native.bounds().unwrap();
+        for (a, b) in a
+            .min
+            .into_iter()
+            .chain(a.max)
+            .zip(b.min.into_iter().chain(b.max))
+        {
+            assert!((a - b).abs() < 2e-5, "bounds {a} {b}");
+        }
         let volume = body.volume_mm3(QueryOptions::default()).unwrap();
         let actual = native.volume_mm3().unwrap();
         assert!(
@@ -197,7 +256,20 @@ fn metric_cone_clipping_matches_native_material_at_shallow_root_contact_and_deep
                     },
                     "inside{inside} occupied{occupied}"
                 );
+                let occupied = decoded
+                    .boolean(&probe, BooleanOperation::Intersect, policy)
+                    .unwrap()
+                    .map_or(0., |s| s.volume_mm3().unwrap());
+                assert!(
+                    if inside {
+                        occupied > 0.99 * edge.powi(3)
+                    } else {
+                        occupied < 1e-4 * edge.powi(3)
+                    },
+                    "STEP inside{inside} occupied{occupied}"
+                );
             }
         }
+        std::fs::remove_file(path).unwrap();
     }
 }

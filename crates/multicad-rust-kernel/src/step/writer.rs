@@ -59,13 +59,22 @@ impl Writer {
         &mut self,
         encode: impl FnOnce(&mut StepFile) -> Result<Entity, StepError>,
     ) -> Result<(), StepError> {
+        self.append_typed(encode)
+    }
+
+    /// Preserve a feature's typed cancellation while using the same atomic
+    /// compound transaction and resource checks as every existing append.
+    pub(super) fn append_typed<E: From<StepError>>(
+        &mut self,
+        encode: impl FnOnce(&mut StepFile) -> Result<Entity, E>,
+    ) -> Result<(), E> {
         if self.solids.len() == MAX_COMPOUND_SOLIDS || exceeds_readback_budget(&self.file) {
-            return Err(StepError::Limit);
+            return Err(StepError::Limit.into());
         }
         let previous = (self.file.data.len(), self.file.next);
         let encoded = encode(&mut self.file).and_then(|solid| {
             if exceeds_readback_budget(&self.file) {
-                Err(StepError::Limit)
+                Err(StepError::Limit.into())
             } else {
                 Ok(solid)
             }

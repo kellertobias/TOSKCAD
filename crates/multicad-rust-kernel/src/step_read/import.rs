@@ -18,7 +18,7 @@ mod chamfered;
 use chamfered::{Bore, canonical_bores};
 mod cylindrical_revolution;
 #[path = "helical_cut.rs"]
-mod helical_cut;
+pub(super) mod helical_cut;
 pub(super) use helical_cut::read_member as read_helical_cut_member;
 mod orthogonal;
 mod pierced;

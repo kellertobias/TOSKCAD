@@ -1015,14 +1015,14 @@ impl Spline {
         })
     }
 
-    fn multiplicities(&self) -> String {
+    pub(super) fn multiplicities(&self) -> String {
         let mut values = vec![DEGREE.to_string(); self.knots.len()];
         values[0] = (DEGREE + 1).to_string();
         values[self.knots.len() - 1] = values[0].clone();
         values.join(",")
     }
 
-    fn knot_values(&self) -> String {
+    pub(super) fn knot_values(&self) -> String {
         self.knots
             .iter()
             .map(|knot| format!("{knot:.16E}"))

@@ -10,9 +10,14 @@ mod compound;
 mod curve;
 mod helical;
 mod helical_import;
+mod thread_entry_chamfer;
 pub use helical_import::{
     helical_import_matches, helical_nut_import_matches, helical_receiver_import_matches,
     helical_screw_import_matches, thread_end_relief_import_matches, threaded_shaft_import_matches,
+};
+pub use thread_entry_chamfer::{
+    EntryChamferProof, EntryChamferReadError, verify_thread_entry_chamfer,
+    verify_thread_entry_chamfer_with_interrupt,
 };
 mod herringbone;
 pub use authored_compound::{ExpectedStepMember, VerifiedStepMember, verify_authored_compound};

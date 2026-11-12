@@ -2,7 +2,7 @@
 use super::Error;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct I {
+pub(crate) struct I {
     pub lo: f64,
     pub hi: f64,
 }

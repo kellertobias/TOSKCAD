@@ -43,12 +43,15 @@ pub(super) fn wrapper<const N: usize>(
     Ok((reference(geometry)?, curves))
 }
 
-pub(super) struct Curve<const N: usize> {
+pub(in crate::step_read) struct Curve<const N: usize> {
     pub axis: SurfaceAxis,
     pub points: Vec<[f64; N]>,
 }
 
-pub(super) fn curve<const N: usize>(shell: &Shell<'_, '_>, id: u32) -> Result<Curve<N>> {
+pub(in crate::step_read) fn curve<const N: usize>(
+    shell: &Shell<'_, '_>,
+    id: u32,
+) -> Result<Curve<N>> {
     let [
         Value::String(_),
         degree,

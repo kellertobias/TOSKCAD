@@ -8,7 +8,7 @@ use helical::{face, require, ring, step_error};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 #[path = "helical_cut/decode.rs"]
-mod decode;
+pub(in crate::step_read) mod decode;
 use decode::{Affine, Edge};
 
 const BOTTOM: usize = 0;

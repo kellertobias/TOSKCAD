@@ -52,6 +52,11 @@ mod spline_sweep;
 mod spur_gear;
 mod stadium;
 pub(crate) mod tapered_thread;
+pub(crate) mod thread_entry_chamfer;
+pub use thread_entry_chamfer::{
+    Error as EntryChamferStepError, write_thread_entry_chamfer,
+    write_thread_entry_chamfer_with_interrupt,
+};
 mod torus;
 pub use radial_boundary::write_radial_boundary;
 pub use rounded_cylinder::write_rounded_cylinder;

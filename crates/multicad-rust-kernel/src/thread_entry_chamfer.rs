@@ -14,6 +14,7 @@ pub use mesh::{tessellate, tessellate_with_interrupt};
 mod phase;
 mod profile;
 mod support;
+pub(crate) mod trim;
 mod volume;
 
 pub type Point = [f64; 3];
