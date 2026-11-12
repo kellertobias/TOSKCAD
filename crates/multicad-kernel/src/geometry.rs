@@ -11,6 +11,7 @@ use multicad_rust_kernel::{
 use std::path::Path;
 use std::rc::{Rc, Weak};
 mod annulus_body;
+mod arithmetic;
 mod axial_stack_body;
 mod bevel_body;
 pub(crate) mod bore_treatment;

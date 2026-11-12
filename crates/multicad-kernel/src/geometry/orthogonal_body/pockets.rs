@@ -250,8 +250,13 @@ impl Solid {
         }
         let axes = [frame.u, frame.v, frame.normal()];
         let local = |point| axes.map(|axis| dot(subtract(point, frame.origin), axis));
+        let [local_start, local_finish] = if frame == PlaneFrame::default() {
+            [local(start), local(finish)]
+        } else {
+            connection_bore_axis(frame, tool, start, finish, protected_radius_mm, policy)?
+        };
         let witness = body
-            .identify_through(local(start), local(finish), protected_radius_mm, policy)
+            .identify_through(local_start, local_finish, protected_radius_mm, policy)
             .map_err(circular_pocket_body::pocket_error)?;
         let mouths = witness
             .centers_mm
@@ -568,4 +573,97 @@ impl OrthogonalBody {
             }
         }
     }
+}
+
+/// A new bore may spend a small construction budget to align its complete
+/// swept circular surface with the retained stock chart. This is not an
+/// equivalence rule for existing geometry or an empty-intersection proof.
+fn connection_bore_axis(
+    frame: PlaneFrame,
+    tool: &CircularPocketTool,
+    start: Point,
+    finish: Point,
+    radius: f64,
+    policy: GeometryPolicy,
+) -> Result<[Point; 2], GeometryError> {
+    use crate::geometry::arithmetic::{difference_with_error, dot_error, sum_error};
+    let refuse =
+        || unsupported("The receiving round tool cannot be certified in the stock axis chart");
+    let pullback = |origin_mm| {
+        super::super::revolution_body::local_attachment(
+            frame,
+            ReferenceFrame {
+                origin_mm,
+                u: tool.frame.u,
+                v: tool.frame.v,
+            },
+            policy,
+        )
+        .map_err(|_| refuse())
+    };
+    let from = pullback(start)?;
+    let to = pullback(finish)?;
+    let delta: Point = std::array::from_fn(|i| to.origin_mm[i] - from.origin_mm[i]);
+    let axis = (0..3)
+        .max_by(|&a, &b| delta[a].abs().total_cmp(&delta[b].abs()))
+        .expect("three axes");
+    let a = (axis + 1) % 3;
+    let b = (axis + 2) % 3;
+    let length = from.u[a].hypot(from.u[b]);
+    if length < 0.5 || delta[axis].abs() < policy.minimum_feature_mm {
+        return Err(refuse());
+    }
+    let (cos, sin) = (from.u[a] / length, from.u[b] / length);
+    let sign = if -sin * from.v[a] + cos * from.v[b] < 0. {
+        -1.
+    } else {
+        1.
+    };
+    let mut circle_u = [0.; 3];
+    let mut circle_v = [0.; 3];
+    circle_u[a] = cos;
+    circle_u[b] = sin;
+    circle_v[a] = -sign * sin;
+    circle_v[b] = sign * cos;
+    let axes = [frame.u, frame.v, frame.normal()];
+    let discrepancy = |p: Point, translation: Point, reference: Point| {
+        let mut world = [0.; 3];
+        let mut errors = [0.; 3];
+        for i in 0..3 {
+            let (value, product_error) = dot_error(axes.map(|axis| axis[i]), p);
+            let (value, addition_error) = sum_error(value, translation[i]);
+            world[i] = value;
+            errors[i] = (product_error + addition_error).next_up();
+        }
+        let (delta, subtraction_error) = difference_with_error(world, reference);
+        (0..3).fold(0., |sum: f64, i| {
+            let component = (delta[i].abs() + subtraction_error[i]).next_up();
+            (sum + (component + errors[i]).next_up()).next_up()
+        })
+    };
+    let mut end = from.origin_mm;
+    end[axis] = to.origin_mm[axis];
+    // Compare a rigid phase alignment of the two circular bases, rather than
+    // requiring an arbitrary in-plane tool clock to equal the stock clock.
+    let radial = (radius
+        * (discrepancy(circle_u, [0.; 3], tool.frame.u)
+            + discrepancy(circle_v, [0.; 3], tool.frame.v))
+        .next_up())
+    .next_up();
+    let centers = discrepancy(from.origin_mm, frame.origin, start).max(discrepancy(
+        end,
+        frame.origin,
+        finish,
+    ));
+    // The computed cos/sin pair approximates a unit pair. The projected
+    // length is >=1/2 and checked source axes are near unit; this reserve
+    // bounds the phase-pair normalization error at the entire physical radius.
+    // Endpoint/basis arithmetic above uses actual outward residuals, so a
+    // large translation does not create a spurious relative error floor.
+    let phase_error = (64. * f64::EPSILON * radius).next_up();
+    let deviation = ((centers + radial).next_up() + phase_error).next_up();
+    if !deviation.is_finite() || deviation > policy.linear_tolerance_mm / 32. {
+        return Err(refuse());
+    }
+    Ok([from.origin_mm, end])
 }
