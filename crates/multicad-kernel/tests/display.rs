@@ -97,7 +97,14 @@ fn display_edges_and_vertices_are_brep_entities_without_mesh_diagonals() {
 #[test]
 fn tessellations_are_consistently_oriented_closed_surfaces() {
     let mesh_volume = |solid: &multicad_kernel::Solid| {
-        let mesh = solid.mesh(multicad_kernel::MeshOptions::default()).unwrap();
+        // Request enough angular resolution for the one-percent curved
+        // volume check; the default display mesh may legitimately be coarser.
+        let mesh = solid
+            .mesh(multicad_kernel::MeshOptions {
+                angular_deflection_rad: 0.1,
+                ..Default::default()
+            })
+            .unwrap();
         let v = mesh.vertices.as_chunks::<3>().0;
         mesh.indices
             .as_chunks::<3>()
