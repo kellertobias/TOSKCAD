@@ -141,6 +141,196 @@ fn formula(expression: &str) -> Value {
     json!({ "expression": expression, "unit": "mm" })
 }
 
+#[path = "../../multicad-mcp/tests/support/screw_connection.rs"]
+mod washer_connection_fixture;
+
+#[test]
+fn default_app_creates_edits_exports_and_reopens_real_washer_connections_atomically() {
+    use multicad_core::{
+        document::EntityId,
+        model::*,
+        project_file::{self, ProjectFile},
+    };
+    let (document, mut request, _) = washer_connection_fixture::fixture();
+    for role in [
+        ScrewConnectionHardwareRole::HeadWasher,
+        ScrewConnectionHardwareRole::NutWasher,
+    ] {
+        request.hardware.push(ScrewConnectionHardwareRequest {
+            role_id: EntityId::new(),
+            role,
+            name: "Actual flat washer".into(),
+            source: ScrewConnectionHardwareSource::Generated {
+                part: Box::new(MechanicalPartRequest::new(
+                    "Washer",
+                    MechanicalPartParameters::Washer {
+                        bore_diameter: multicad_core::model::length(3.4),
+                        outside_diameter: multicad_core::model::length(6.),
+                        thickness: multicad_core::model::length(0.2),
+                        frame: Default::default(),
+                    },
+                )),
+            },
+            instance: EntityId::new(),
+            driver: EntityId::new(),
+        });
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("washer-connection.tcd");
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(document).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    std::fs::write(&project, bytes).unwrap();
+    let arguments = [
+        "--project",
+        project.to_str().unwrap(),
+        "--export-dir",
+        directory.path().to_str().unwrap(),
+    ];
+    let mut client = Client::start(&arguments);
+    assert_eq!(
+        client.ok("document_info", json!({}))["geometry_backend"],
+        "rust"
+    );
+    let revision = client.revision();
+    let created = client.ok(
+        "set_screw_connection",
+        json!({"expected_revision":revision,"request":request}),
+    );
+    close(
+        created["checks"][0]["actual_engagement_mm"]
+            .as_f64()
+            .unwrap(),
+        2.4,
+    );
+    assert_eq!(
+        created["checks"][0]["hardware_instances"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    let revision = client.revision();
+    client.ok("save_project", json!({"expected_revision":revision}));
+    let saved = std::fs::read(&project).unwrap();
+    let original = client.ok(
+        "inspect_screw_connection",
+        json!({"connection":request.connection}),
+    )["request"]
+        .clone();
+    let mut invalid = request.clone();
+    let ScrewConnectionHardwareSource::Generated { part } = &mut invalid.hardware[2].source else {
+        unreachable!()
+    };
+    let MechanicalPartParameters::Washer {
+        bore_diameter,
+        outside_diameter,
+        ..
+    } = &mut part.parameters
+    else {
+        unreachable!()
+    };
+    *bore_diameter = multicad_core::model::length(6.4);
+    *outside_diameter = multicad_core::model::length(12.);
+    let failed = client.fail(
+        "set_screw_connection",
+        json!({"expected_revision":revision,"request":invalid}),
+    );
+    assert!(
+        failed.to_string().to_lowercase().contains("bearing"),
+        "{failed}"
+    );
+    assert_eq!(client.revision(), revision);
+    assert_eq!(std::fs::read(&project).unwrap(), saved);
+    assert_eq!(
+        client.ok(
+            "inspect_screw_connection",
+            json!({"connection":request.connection})
+        )["request"],
+        original
+    );
+    let ScrewConnectionHardwareSource::Generated { part } = &mut request.hardware[2].source else {
+        unreachable!()
+    };
+    let MechanicalPartParameters::Washer { thickness, .. } = &mut part.parameters else {
+        unreachable!()
+    };
+    *thickness = multicad_core::model::length(0.4);
+    client.ok(
+        "set_screw_connection",
+        json!({"expected_revision":revision,"request":request}),
+    );
+    let edited = client.ok(
+        "inspect_screw_connection",
+        json!({"connection":request.connection}),
+    )["request"]
+        .clone();
+    let revision = client.revision();
+    client.ok("undo", json!({"expected_revision":revision}));
+    assert_eq!(
+        client.ok(
+            "inspect_screw_connection",
+            json!({"connection":request.connection})
+        )["request"],
+        original
+    );
+    let revision = client.revision();
+    client.ok("redo", json!({"expected_revision":revision}));
+    assert_eq!(
+        client.ok(
+            "inspect_screw_connection",
+            json!({"connection":request.connection})
+        )["request"],
+        edited
+    );
+    for (index, height) in [(2, 0.4), (3, 0.2)] {
+        let ScrewConnectionHardwareSource::Generated { part } = &request.hardware[index].source
+        else {
+            unreachable!()
+        };
+        let receipt = client.ok(
+            "export_step",
+            json!({"part":part.body,"file_name":format!("washer-{index}.step")}),
+        );
+        close(
+            receipt["readback_volume_mm3"].as_f64().unwrap(),
+            PI * (9. - 1.7_f64.powi(2)) * height,
+        );
+    }
+    let revision = client.revision();
+    client.ok("save_project", json!({"expected_revision":revision}));
+    drop(client);
+    let mut reopened = Client::start(&arguments);
+    assert_eq!(
+        reopened.ok(
+            "inspect_screw_connection",
+            json!({"connection":request.connection})
+        )["request"],
+        edited
+    );
+    let model = reopened.ok("evaluate_model", json!({}));
+    close(
+        model["screw_connections"][0]["actual_engagement_mm"]
+            .as_f64()
+            .unwrap(),
+        2.4,
+    );
+    assert_eq!(model["parts"].as_array().unwrap().len(), 1);
+    let instances = model["instances"].as_array().unwrap();
+    assert_eq!(instances.len(), 4);
+    for hardware in &request.hardware {
+        let instance = instances
+            .iter()
+            .find(|i| i["instance"] == json!(hardware.instance))
+            .unwrap();
+        assert_eq!(instance["solid_count"], 1);
+    }
+}
+
 #[test]
 fn default_app_validates_unplaced_pinned_geometry_without_changing_its_source() {
     use multicad_core::{
