@@ -806,6 +806,21 @@ impl Solid {
         ];
         let mut found = [false; 2];
         let faces = self.faces()?;
+        if self.uses_rust_geometry() {
+            // Owned bodies derive their initial ancestry from source geometry;
+            // there need not be a stored metadata override yet. Capture the
+            // current public names before applying this metadata-only change.
+            self.provenance = self
+                .topology_snapshot(feature, 0)?
+                .elements
+                .into_iter()
+                .map(|mut element| {
+                    element.geometry = None;
+                    element
+                })
+                .collect();
+            self.rust_origins.clear();
+        }
         for element in &self.provenance {
             for origin in element
                 .origins
