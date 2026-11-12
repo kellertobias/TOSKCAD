@@ -48,6 +48,10 @@ impl Solid {
 }
 
 impl SphereBody {
+    pub(crate) fn geometry(&self) -> Sphere {
+        self.geometry
+    }
+
     pub(crate) fn radius_mm(&self) -> f64 {
         self.geometry.radius_mm()
     }

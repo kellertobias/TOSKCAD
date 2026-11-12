@@ -8,7 +8,76 @@ pub struct Sphere {
     radius_mm: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PointProjection {
+    pub point_mm: [f64; 3],
+    pub distance_mm: f64,
+    /// A surface query at the centre has a continuum of nearest points.
+    pub unique: bool,
+    pub inside: bool,
+}
+
 impl Sphere {
+    /// Project onto the closed occupied sphere, in its centre-relative chart.
+    pub fn closest_point(self, point: [f64; 3]) -> Option<PointProjection> {
+        self.project(point, false)
+    }
+
+    /// Project onto the complete spherical face rather than occupied material.
+    pub fn closest_surface_point(self, point: [f64; 3]) -> Option<PointProjection> {
+        self.project(point, true)
+    }
+
+    fn project(self, point: [f64; 3], surface: bool) -> Option<PointProjection> {
+        if point.into_iter().any(|x| !x.is_finite()) {
+            return None;
+        }
+        let radial = point[0].hypot(point[1]).hypot(point[2]);
+        if !radial.is_finite() {
+            return None;
+        }
+        let inside = self.radius_mm - radial > 64. * f64::EPSILON * self.radius_mm.max(radial);
+        if !surface && radial <= self.radius_mm {
+            return Some(PointProjection {
+                point_mm: point,
+                distance_mm: 0.,
+                unique: true,
+                inside,
+            });
+        }
+        if radial == 0. {
+            return Some(PointProjection {
+                point_mm: [self.radius_mm, 0., 0.],
+                distance_mm: self.radius_mm,
+                unique: false,
+                inside,
+            });
+        }
+        let projected = if radial < 1. {
+            // A subnormal norm can have large relative error. Normalize a
+            // rescaled vector, then expand without an overflowing R/norm.
+            let scale = point.into_iter().map(f64::abs).fold(0., f64::max);
+            let scaled = point.map(|x| x / scale);
+            let factor = self.radius_mm / scaled[0].hypot(scaled[1]).hypot(scaled[2]);
+            scaled.map(|x| x * factor)
+        } else {
+            point.map(|coordinate| {
+                // Choose the multiplication order per component to preserve
+                // representable small coordinates beside very distant probes.
+                if coordinate.abs() > self.radius_mm {
+                    self.radius_mm * (coordinate / radial)
+                } else {
+                    coordinate * (self.radius_mm / radial)
+                }
+            })
+        };
+        Some(PointProjection {
+            point_mm: projected,
+            distance_mm: (radial - self.radius_mm).abs(),
+            unique: true,
+            inside,
+        })
+    }
     pub fn new(radius_mm: f64) -> Option<Self> {
         ((1e-6..=1e7).contains(&radius_mm)).then_some(Self { radius_mm })
     }
@@ -86,6 +155,46 @@ impl Sphere {
 mod tests {
     use super::*;
     use crate::manufacturing;
+
+    #[test]
+    fn point_projection_distinguishes_material_surface_and_nonunique_centre() {
+        let sphere = Sphere::new(2.).unwrap();
+        for (point, expected, distance, inside) in [
+            ([3., 4., 0.], [1.2, 1.6, 0.], 3., false),
+            ([0., 0., 3.], [0., 0., 2.], 1., false),
+            ([0., 1., 0.], [0., 2., 0.], 1., true),
+            ([2., 0., 0.], [2., 0., 0.], 0., false),
+            ([1e-300, 0., 0.], [2., 0., 0.], 2., true),
+        ] {
+            let surface = sphere.closest_surface_point(point).unwrap();
+            assert!(surface.unique);
+            assert_eq!(surface.inside, inside);
+            assert!((surface.distance_mm - distance).abs() < 1e-14);
+            for (a, b) in surface.point_mm.into_iter().zip(expected) {
+                assert!((a - b).abs() < 1e-14);
+            }
+            let material = sphere.closest_point(point).unwrap();
+            assert_eq!(material.inside, inside);
+            assert_eq!(material.distance_mm, if inside { 0. } else { distance });
+        }
+        let centre = sphere.closest_surface_point([0.; 3]).unwrap();
+        assert!(!centre.unique && centre.inside);
+        assert_eq!(centre.distance_mm, 2.);
+        assert_eq!(centre.point_mm, [2., 0., 0.]);
+        let occupied = sphere.closest_point([0.; 3]).unwrap();
+        assert!(occupied.unique && occupied.inside);
+        assert_eq!(occupied.distance_mm, 0.);
+        let tiny = f64::from_bits(1);
+        let subnormal = sphere.closest_surface_point([tiny, tiny, 0.]).unwrap();
+        assert!((subnormal.point_mm[0].hypot(subnormal.point_mm[1]) - 2.).abs() < 1e-14);
+        let large = Sphere::new(1e7).unwrap();
+        let far = large.closest_surface_point([1e-20, 1e308, 0.]).unwrap();
+        assert!(far.point_mm[0] > 0. && far.point_mm[1] == 1e7);
+        for invalid in [[f64::NAN, 0., 0.], [f64::INFINITY; 3], [f64::MAX; 3]] {
+            assert!(sphere.closest_point(invalid).is_none());
+            assert!(sphere.closest_surface_point(invalid).is_none());
+        }
+    }
 
     #[test]
     fn exact_metrics_and_closed_mesh_within_the_chord_bound() {

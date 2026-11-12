@@ -80,6 +80,48 @@ fn near(a: f64, b: f64) {
     assert!((a - b).abs() < 1e-6, "{a} != {b}");
 }
 #[test]
+fn rust_spherical_face_at_its_centre_publishes_distance_without_unique_components() {
+    let mut s = Session::new(Document::new("Spherical measurement").unwrap()).unwrap();
+    let sphere = PrimitiveRequest::new(
+        "Sphere",
+        PrimitiveParameters::Sphere {
+            radius: length(2.),
+            frame: Default::default(),
+        },
+    );
+    s.commit(
+        model::prepare_primitive(&s, s.revision(), actor(), &sphere)
+            .unwrap()
+            .prepared,
+    )
+    .unwrap();
+    let point = primitive(&mut s, "Point reference", 0., 1.);
+    let before = s.document().clone();
+    let m = Compiler::default()
+        .compile_with_backend(s.document(), s.revision(), GeometryBackend::Rust, None)
+        .unwrap();
+    let query = MeasurementQuery {
+        a: selected(&m, sphere.body, TopologyKind::Face, |_| true),
+        b: selected(
+            &m,
+            point.body,
+            TopologyKind::Vertex,
+            |g| matches!(g, Some(AnalyticGeometry::Point {position_mm}) if position_mm == [0.; 3]),
+        ),
+    };
+    let evaluation = measure_model(&m, &query);
+    evaluation.stamp.check(s.document(), s.revision()).unwrap();
+    let value = evaluation.result.unwrap();
+    near(value.minimum_mm, 2.);
+    assert_eq!(value.total_solutions, None);
+    assert!(!value.witnesses_complete);
+    assert_eq!(value.axis_components_mm, None);
+    assert!(value.axis_warning.is_some());
+    assert!(!value.inner_solution);
+    assert_eq!(s.document(), &before);
+}
+
+#[test]
 fn exact_bench_clearance_and_same_part_faces_use_real_reference_ids_without_source_edits() {
     let mut s = Session::new(Document::new("Equipment clearance").unwrap()).unwrap();
     let a = primitive(&mut s, "Bench", 0., 10.);

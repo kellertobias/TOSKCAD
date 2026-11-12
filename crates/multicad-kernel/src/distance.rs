@@ -5,6 +5,7 @@ mod circular;
 mod machined;
 mod planar;
 mod rounded;
+mod sphere;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BRepSelection {
     Whole,
@@ -59,6 +60,9 @@ pub(crate) fn measure(
                 GeometryErrorKind::Unsupported,
                 "Exact distance requires both selections to use the same geometry backend",
             ));
+        }
+        if let Some(result) = sphere::measure(a, selection_a, b, selection_b, tolerance) {
+            return result;
         }
         if let Some(result) = rounded::measure(a, selection_a, b, selection_b, tolerance) {
             return result;
