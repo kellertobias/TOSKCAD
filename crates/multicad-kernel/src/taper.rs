@@ -180,6 +180,21 @@ impl Solid {
         if taper_rad == 0. {
             return Self::extrude_curved_profile_vector(profile, displacement_mm, policy);
         }
+        if !crate::OCCT_LINKED {
+            profile.checked(policy)?;
+            let feature = EntityId::new();
+            let count = profile.outer.len() + profile.holes.iter().map(Vec::len).sum::<usize>();
+            let origins = crate::geometry::construction::origins(feature, count);
+            return Self::rust_extrude_linear_named(
+                profile,
+                displacement_mm,
+                taper_rad,
+                feature,
+                &origins,
+                policy,
+            )?
+            .without_authored_provenance();
+        }
         let end = end_profile(profile, displacement_mm, taper_rad, policy)?;
         let a = profile.checked(policy)?;
         let b = end.checked(policy)?;
@@ -217,6 +232,16 @@ impl Solid {
             return Self::extrude_curved_profile_vector_named(
                 profile,
                 displacement_mm,
+                feature,
+                origins,
+                policy,
+            );
+        }
+        if !crate::OCCT_LINKED {
+            return Self::rust_extrude_linear_named(
+                profile,
+                displacement_mm,
+                taper_rad,
                 feature,
                 origins,
                 policy,
