@@ -235,7 +235,12 @@ mod tests {
         let mut equipment = std::collections::BTreeSet::new();
         for entry in entries {
             assert_eq!(entry.origin, LibraryOrigin::Bundled);
-            assert!(entry.problem.is_none());
+            assert!(
+                entry.problem.is_none(),
+                "{}: {:?}",
+                entry.path.display(),
+                entry.problem
+            );
             assert!(entry.preview.is_some());
             assert_eq!(entry.symbol_definitions, 1);
             if entry.mechanical_parts.is_empty() {
