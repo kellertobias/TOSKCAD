@@ -355,3 +355,121 @@ fn named_plane_boundaries_have_semantic_cap_origins_and_preserve_exact_target_an
         }
     }
 }
+
+#[test]
+fn angled_planar_split_preserves_material_cap_ancestry_mesh_and_step_after_placement() {
+    use multicad_core::{
+        document::EntityId,
+        references::{Origin, TopologyKind},
+    };
+    let owner = EntityId::new();
+    let feature = EntityId::new();
+    let target = Solid::box_named([10.; 3], owner, p()).unwrap();
+    let pose = RigidTransform {
+        rotation: [[0., 0., 1.], [1., 0., 0.], [0., 1., 0.]],
+        translation_mm: [1000., -2000., 3000.],
+    };
+    let source = target.transformed(pose).unwrap();
+    let before = source.topology_snapshot(owner, 0).unwrap();
+    for reverse in [false, true] {
+        let plane = PlaneFrame {
+            origin: [1005., -1995., 3005.],
+            u: [0., 0.6, -0.8],
+            v: [if reverse { 1. } else { -1. }, 0., 0.],
+        };
+        let split = source
+            .split_by_plane_named(plane, feature, p(), None)
+            .unwrap();
+        for (body, positive, role) in [
+            (&split.positive, true, "split/plane/positive"),
+            (&split.negative, false, "split/plane/negative"),
+        ] {
+            near(body.volume_mm3().unwrap(), 500.);
+            assert_eq!(body.solid_count().unwrap(), 1);
+            let snapshot = body.topology_snapshot(feature, 1).unwrap();
+            let cap = Origin {
+                source: feature,
+                role: role.into(),
+            };
+            let caps: Vec<_> = snapshot
+                .elements
+                .iter()
+                .filter(|e| e.key.kind == TopologyKind::Face && e.origins.contains(&cap))
+                .collect();
+            assert_eq!(caps.len(), 1);
+            assert!(caps[0].frames.iter().any(|f| f.origin == cap));
+            assert!(
+                snapshot
+                    .elements
+                    .iter()
+                    .any(|e| e.key.kind == TopologyKind::Face
+                        && e.origins.iter().any(|o| o.source == owner))
+            );
+            assert!(
+                !snapshot
+                    .elements
+                    .iter()
+                    .flat_map(|e| &e.origins)
+                    .any(|o| o.role.starts_with("split/enclosure/"))
+            );
+            let receipt = body
+                .manufacturing_mesh_with_receipt(Default::default())
+                .unwrap();
+            assert!(!receipt.mesh.indices.is_empty());
+            let normal = plane.normal();
+            for vertex in receipt.mesh.vertices.as_chunks::<3>().0 {
+                let signed: f64 = (0..3)
+                    .map(|i| (vertex[i] - plane.origin[i]) * normal[i])
+                    .sum();
+                assert!(if positive {
+                    signed >= -1e-7
+                } else {
+                    signed <= 1e-7
+                });
+            }
+            let folder = tempfile::tempdir().unwrap();
+            let path = folder.path().join("angled-split.step");
+            body.write_step(&path).unwrap();
+            let loaded = Solid::read_step(&path, p()).unwrap();
+            near(loaded.volume_mm3().unwrap(), 500.);
+        }
+        assert_eq!(source.topology_snapshot(owner, 0).unwrap(), before);
+    }
+    let calls = Cell::new(0);
+    let cancel = || {
+        calls.set(calls.get() + 1);
+        calls.get() >= 8
+    };
+    let error = source
+        .split_by_plane_named(
+            PlaneFrame {
+                origin: [1005., -1995., 3005.],
+                u: [0., 0.6, -0.8],
+                v: [-1., 0., 0.],
+            },
+            feature,
+            p(),
+            Some(&cancel),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(error.kind, GeometryErrorKind::Cancelled);
+    assert_eq!(source.topology_snapshot(owner, 0).unwrap(), before);
+    for origin in [[1000., -2000., 3000.], [1005., -1995., 4000.]] {
+        assert!(
+            source
+                .split_by_plane_named(
+                    PlaneFrame {
+                        origin,
+                        u: [0., 0.6, -0.8],
+                        v: [-1., 0., 0.],
+                    },
+                    feature,
+                    p(),
+                    None,
+                )
+                .is_err()
+        );
+        assert_eq!(source.topology_snapshot(owner, 0).unwrap(), before);
+    }
+}

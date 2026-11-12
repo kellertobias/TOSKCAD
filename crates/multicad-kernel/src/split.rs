@@ -136,7 +136,13 @@ impl Solid {
             Ok(solid)
         };
         let [positive, negative] = if self.uses_rust_geometry() {
-            self.split_by_cardinal_plane(plane, feature, policy, interrupt)?
+            match self.split_by_cardinal_plane(plane, feature, policy, interrupt) {
+                Ok(pair) => pair,
+                Err(cause) if cause.kind == GeometryErrorKind::Unsupported => {
+                    self.split_by_planar_plane(plane, feature, policy, interrupt)?
+                }
+                Err(cause) => return Err(cause),
+            }
         } else {
             let positive = clip(true)?;
             checkpoint(interrupt)?;
@@ -164,6 +170,107 @@ impl Solid {
         }
         checkpoint(interrupt)?;
         Ok(PlaneSplit { positive, negative })
+    }
+
+    /// Finite half-space tools enclose the entire source AABB. Their only
+    /// boundary that can cut source material is the authored split plane.
+    fn split_by_planar_plane(
+        &self,
+        plane: crate::PlaneFrame,
+        feature: Option<multicad_core::document::EntityId>,
+        policy: GeometryPolicy,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<[Self; 2], GeometryError> {
+        if self.geometry_policy() != policy || policy.boolean_fuzzy_mm != 0. {
+            return Err(failure(
+                GeometryErrorKind::Unsupported,
+                "Rust Plane Split requires the stock's exact geometry policy",
+            ));
+        }
+        let bounds = self.bounds()?;
+        let radius = (0..8)
+            .map(|corner| {
+                let delta: [f64; 3] = std::array::from_fn(|i| {
+                    if corner & (1 << i) == 0 {
+                        bounds.min[i] - plane.origin[i]
+                    } else {
+                        bounds.max[i] - plane.origin[i]
+                    }
+                });
+                delta[0].hypot(delta[1]).hypot(delta[2])
+            })
+            .fold(policy.minimum_feature_mm, f64::max);
+        // checked() bounds both squared axis lengths and their dot product
+        // within 1e-10 of an orthonormal basis. Its inverse norm is < 2,
+        // so this strict factor-four enclosure includes roundoff as well as
+        // every source corner, without relying on displayed geometry.
+        let extent = radius * 4.;
+        let corners = [
+            [-extent, -extent],
+            [extent, -extent],
+            [extent, extent],
+            [-extent, extent],
+        ];
+        let profile = crate::CurvedProfile {
+            frame: plane,
+            outer: (0..4)
+                .map(|i| crate::CurvedEdge2d::Line {
+                    a: corners[i],
+                    b: corners[(i + 1) % 4],
+                })
+                .collect(),
+            holes: vec![],
+        };
+        let feature = feature.unwrap_or_default();
+        let origins: Vec<_> = (0..4)
+            .map(|i| multicad_core::references::Origin {
+                source: feature,
+                role: format!("split/enclosure/side/{i}"),
+            })
+            .collect();
+        let build = |positive: bool| -> Result<Self, GeometryError> {
+            checkpoint(interrupt)?;
+            let tool = Self::rust_extrude_linear_named(
+                &profile,
+                plane
+                    .normal()
+                    .map(|v| v * extent * if positive { 1. } else { -1. }),
+                0.,
+                feature,
+                &origins,
+                policy,
+            )?
+            .with_feature_cap_roles(
+                feature,
+                if positive {
+                    "split/plane/positive"
+                } else {
+                    "split/plane/negative"
+                },
+                "split/enclosure/far",
+            )?;
+            let result = Self::boolean_planar_certified(
+                &[self, &tool],
+                BooleanOperation::Intersect,
+                feature,
+                policy,
+                interrupt,
+            )
+            .ok_or_else(|| {
+                failure(
+                    GeometryErrorKind::Unsupported,
+                    "Rust angled Plane Split requires certified planar material",
+                )
+            })??;
+            let Some(solid) = result else {
+                return Err(failure(
+                    GeometryErrorKind::InvalidResult,
+                    "Split plane must cross the target with positive-volume material on both sides",
+                ));
+            };
+            Ok(solid)
+        };
+        Ok([build(true)?, build(false)?])
     }
     pub fn split_by_plane_named(
         &self,

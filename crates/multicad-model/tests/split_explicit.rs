@@ -577,12 +577,85 @@ fn rust_plane_split_obeys_reversed_axes_and_rejects_ambiguous_cuts() {
         v: [0., 0.6, 0.8],
         ..Default::default()
     };
-    assert!(
-        build(tilted)
-            .1
-            .err()
-            .unwrap()
-            .message
-            .contains("world-axis normal")
+    let (request, result) = build(tilted);
+    let result = result.unwrap();
+    // y < 0.75*z - 3 inside the 10 mm cube is a triangular prism:
+    // 10 * (10 - 4) * 4.5 / 2 = 135 mm³ on the positive side.
+    for output in &request.targets[0].outputs {
+        near(
+            result.solid(output.body).unwrap().volume_mm3().unwrap(),
+            if output.side == SplitSideV2::PositivePlane {
+                135.
+            } else {
+                865.
+            },
+        );
+    }
+}
+
+#[test]
+fn angled_plane_split_keeps_saved_output_ids_through_reopen_undo_and_redo() {
+    let mut f = fixture();
+    let before = f.session.document().clone();
+    let request = SplitOperationRequest::new(
+        vec![f.targets[0].clone()],
+        SplitTool::Plane {
+            source: SplitPlane::Authored {
+                frame: Box::new(PrimitiveFrame {
+                    origin: [0., 0., 4.].map(length),
+                    u: [1., 0., 0.],
+                    v: [0., 0.6, 0.8],
+                }),
+            },
+        },
+        false,
     );
+    let prepared =
+        model::prepare_split_operation(&f.session, f.session.revision(), actor(), &request)
+            .unwrap();
+    f.session.commit(prepared.prepared).unwrap();
+    let saved = f.session.document().clone();
+    let check = |document, revision| {
+        let compiled = Compiler::default()
+            .compile_with_backend(document, revision, GeometryBackend::Rust, None)
+            .unwrap();
+        for output in &request.targets[0].outputs {
+            near(
+                compiled.solid(output.body).unwrap().volume_mm3().unwrap(),
+                if output.side == SplitSideV2::PositivePlane {
+                    135.
+                } else {
+                    865.
+                },
+            );
+            assert_eq!(
+                model::read_split_v2(document, output.feature)
+                    .unwrap()
+                    .target,
+                f.targets[0]
+            );
+        }
+    };
+    check(&saved, f.session.revision());
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(saved.clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let reopened = project_file::read(
+        &mut &bytes[..],
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    assert_eq!(reopened.document, saved);
+    check(&reopened.document, 0);
+    f.session.undo(f.session.revision(), actor()).unwrap();
+    assert_eq!(f.session.document(), &before);
+    f.session.redo(f.session.revision(), actor()).unwrap();
+    assert_eq!(f.session.document(), &saved);
+    check(f.session.document(), f.session.revision());
 }
