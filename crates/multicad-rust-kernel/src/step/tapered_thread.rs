@@ -679,4 +679,27 @@ mod tests {
             Err(Error::Unresolved)
         ));
     }
+    #[test]
+    fn direct_preparation_cancellation_at_first_placed_block_is_atomic() {
+        let thread = fixture(1, false, 0.03125);
+        let calls = std::cell::Cell::new(0);
+        let count = || {
+            calls.set(calls.get() + 1);
+            false
+        };
+        thread.manufacturing_tensors(1e-7, Some(&count)).unwrap();
+        let stop = calls.get() + 2;
+        calls.set(0);
+        let cancel = || {
+            calls.set(calls.get() + 1);
+            calls.get() == stop
+        };
+        let frame = [[0.; 3], [1., 0., 0.], [0., 1., 0.]];
+        assert!(matches!(
+            source_nets_with_interrupt(&thread, frame, 1e-7, Some(&cancel)),
+            Err(Error::Cancelled)
+        ));
+        assert_eq!(calls.get(), stop);
+        assert!(source_nets_with_interrupt(&thread, frame, 1e-7, None).is_ok());
+    }
 }
