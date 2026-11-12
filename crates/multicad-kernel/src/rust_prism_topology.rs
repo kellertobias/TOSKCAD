@@ -205,8 +205,9 @@ impl Builder {
             origins: origins.iter().cloned().collect(),
             boundary,
             frames: anchor
-                .map(|frame| AnchoredFrame {
-                    origin: origins[0].clone(),
+                .zip(origins.first())
+                .map(|(frame, origin)| AnchoredFrame {
+                    origin: origin.clone(),
                     frame,
                 })
                 .into_iter()
@@ -662,7 +663,7 @@ impl PlacedPolygon {
         let face_origins = self
             .bore_treatments
             .as_ref()
-            .and_then(|t| t.opaque_origins.clone())
+            .and_then(|t| t.face_origins.clone())
             .unwrap_or(face_origins);
         let mut build = Builder {
             face_origins,

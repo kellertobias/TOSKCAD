@@ -13,7 +13,7 @@ const OPERATION: &str = "Rust edge treatment";
 pub(crate) struct BoreTreatments {
     pub(crate) geometry: ChamferedBores,
     pub(crate) origins: BTreeMap<(usize, bool), Origin>,
-    pub(crate) opaque_origins: Option<Vec<Vec<Origin>>>,
+    pub(crate) face_origins: Option<Vec<Vec<Origin>>>,
 }
 
 impl Solid {
@@ -128,7 +128,7 @@ impl Solid {
         stock.bore_treatments = Some(Rc::new(BoreTreatments {
             geometry,
             origins,
-            opaque_origins: None,
+            face_origins: None,
         }));
         Ok(Self {
             body: SolidBody::PolygonPrism(Rc::new(stock)),
@@ -187,7 +187,7 @@ impl Solid {
         stock.bore_treatments = Some(Rc::new(BoreTreatments {
             geometry,
             origins: cut_origins,
-            opaque_origins: None,
+            face_origins: None,
         }));
         if let Some(keys) = &opaque_faces {
             if keys.len() != stock.faces().len() {
@@ -205,7 +205,7 @@ impl Solid {
                     }]
                 })
                 .collect();
-            Rc::make_mut(stock.bore_treatments.as_mut().expect("new treatments")).opaque_origins =
+            Rc::make_mut(stock.bore_treatments.as_mut().expect("new treatments")).face_origins =
                 Some(identities);
         }
         let result = Self {

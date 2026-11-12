@@ -4,6 +4,7 @@ use super::*;
 use crate::geometry::circular_pocket_body;
 use multicad_rust_kernel::{orthogonal_pockets, step};
 use std::f64::consts::TAU;
+mod counterbore;
 
 impl Solid {
     pub(in crate::geometry) fn with_orthogonal_pockets(
@@ -230,6 +231,16 @@ impl Solid {
         minimum_wall_mm: f64,
         policy: GeometryPolicy,
     ) -> Result<(Self, [Point; 2]), GeometryError> {
+        self.connection_through_bore_protected(tool, minimum_wall_mm, tool.radius_mm, policy)
+    }
+
+    fn connection_through_bore_protected(
+        &self,
+        tool: &CircularPocketTool,
+        minimum_wall_mm: f64,
+        support_radius_mm: f64,
+        policy: GeometryPolicy,
+    ) -> Result<(Self, [Point; 2]), GeometryError> {
         policy.validate()?;
         if policy != self.policy || policy.boolean_fuzzy_mm != 0. {
             return Err(invalid(
@@ -237,7 +248,13 @@ impl Solid {
             ));
         }
         policy.length(minimum_wall_mm)?;
-        let protected_radius_mm = tool.radius_mm + minimum_wall_mm;
+        policy.length(support_radius_mm)?;
+        if support_radius_mm < tool.radius_mm {
+            return Err(invalid(
+                "Receiving support radius cannot be smaller than its bore",
+            ));
+        }
+        let protected_radius_mm = support_radius_mm + minimum_wall_mm;
         policy.length(protected_radius_mm)?;
         let start = circular_pocket_body::tool_start(tool, policy)?;
         let finish = std::array::from_fn(|i| start[i] + tool.displacement_mm[i]);
