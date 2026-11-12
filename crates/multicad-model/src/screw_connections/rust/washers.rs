@@ -8,6 +8,7 @@ pub(super) struct Inputs<'a, 'solid> {
     pub bore: rust_through::ThroughReceiverProof,
     pub grip: f64,
     pub head: [f64; 2],
+    pub head_extent: f64,
     pub nut: [f64; 2],
     pub shaft: f64,
     pub policy: GeometryPolicy,
@@ -110,12 +111,36 @@ pub(super) fn prove(input: Inputs<'_, '_>) -> Result<[f64; 2], ModelError> {
         .policy
         .minimum_feature_mm
         .max(16. * input.policy.linear_tolerance_mm);
+    let head_station = input.bore.head_seat.map_or(0., |s| s.depth_mm);
+    let head_stock = input
+        .bore
+        .head_seat
+        .map_or(stock, |s| [input.bore.radius_mm, s.radius_mm]);
+    if let Some(seat) = input.bore.head_seat
+        && input.head_extent + 5. * margin >= seat.radius_mm
+    {
+        return Err(fail(
+            &input,
+            "The actual head envelope cannot clear the counterbore wall",
+        ));
+    }
     for (role, mut station, mut previous) in [
-        (Role::HeadWasher, -sums[0], input.head),
+        (Role::HeadWasher, head_station - sums[0], input.head),
         (Role::NutWasher, input.grip, stock),
     ] {
         for row in input.placed.iter().filter(|row| row.role == role) {
             let [inner, outer, height] = dimensions(row, &input)?;
+            if role == Role::HeadWasher
+                && input
+                    .bore
+                    .head_seat
+                    .is_some_and(|s| outer + 5. * margin >= s.radius_mm)
+            {
+                return Err(fail(
+                    &input,
+                    "Actual washer material cannot clear the counterbore wall",
+                ));
+            }
             let (_, actual) = row
                 .solid
                 .rust_annulus_data()
@@ -152,7 +177,7 @@ pub(super) fn prove(input: Inputs<'_, '_>) -> Result<[f64; 2], ModelError> {
             &input,
             previous,
             if role == Role::HeadWasher {
-                stock
+                head_stock
             } else {
                 input.nut
             },

@@ -1,6 +1,12 @@
-//! Exact unseated round through receivers for the Rust backend.
+//! Exact round through receivers with optional certified flat counterbores.
 use super::*;
 use multicad_kernel::CircularPocketTool;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FlatSeatProof {
+    pub radius_mm: f64,
+    pub depth_mm: f64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ThroughReceiverProof {
@@ -9,6 +15,7 @@ pub(crate) struct ThroughReceiverProof {
     pub mouths_mm: [[f64; 3]; 2],
     pub radius_mm: f64,
     pub protected_radius_mm: f64,
+    pub head_seat: Option<FlatSeatProof>,
 }
 
 pub(crate) fn build(
@@ -26,9 +33,12 @@ pub(crate) fn build(
             inputs.snapshots,
         )
         .map_err(|cause| error(Some(id), cause))?;
-    if resolved.depth_mm.is_some() || resolved.seat.is_some() || resolved.thread.is_some() {
+    if resolved.depth_mm.is_some()
+        || resolved.thread.is_some()
+        || resolved.seat.is_some_and(|seat| seat.0)
+    {
         return Err(fail(
-            "Rust receiving cuts currently require an unseated round through bore",
+            "Rust receiving cuts require a round through bore with an optional flat counterbore",
         ));
     }
     let pose = source
@@ -73,9 +83,23 @@ pub(crate) fn build(
         displacement_mm: normal.map(|value| value * (reach + overrun)),
         origin: origin(id, "bore"),
     };
-    let (solid, mouths_mm) = stock
-        .rust_connection_through_bore(&tool, resolved.minimum_wall_mm, policy)
-        .map_err(|cause| error(Some(id), cause))?;
+    let head_seat = resolved.seat.map(|(_, diameter, depth_mm)| FlatSeatProof {
+        radius_mm: diameter / 2.,
+        depth_mm,
+    });
+    let (solid, mouths_mm) = if let Some(seat) = head_seat {
+        stock.rust_connection_counterbore(
+            &tool,
+            seat.radius_mm,
+            seat.depth_mm,
+            resolved.minimum_wall_mm,
+            origin(id, "seat"),
+            policy,
+        )
+    } else {
+        stock.rust_connection_through_bore(&tool, resolved.minimum_wall_mm, policy)
+    }
+    .map_err(|cause| error(Some(id), cause))?;
     let expected = [frame.origin, at(reach - overrun)];
     if mouths_mm
         .into_iter()
@@ -95,6 +119,7 @@ pub(crate) fn build(
             mouths_mm,
             radius_mm,
             protected_radius_mm: radius_mm + resolved.minimum_wall_mm,
+            head_seat,
         },
     ))
 }

@@ -157,6 +157,98 @@ fn actual_head_and_nut_washer_stacks_keep_material_bearing_and_both_thread_hands
         }
     }
 }
+
+#[test]
+fn counterbored_through_nut_connections_bear_on_real_shoulders_in_both_hands() {
+    for hand in [ThreadHand::Right, ThreadHand::Left] {
+        for head in [0, 1, 2] {
+            let (document, mut request, _) = fixture::fixture();
+            request.receivers[0].source.seat = Some(ConnectionReceiverSeat::Counterbore {
+                diameter: length(7.),
+                depth: length(1.),
+            });
+            for row in &mut request.hardware {
+                let ScrewConnectionHardwareSource::Generated { part } = &mut row.source else {
+                    unreachable!()
+                };
+                match &mut part.parameters {
+                    MechanicalPartParameters::MachineScrew { thread, .. }
+                    | MechanicalPartParameters::HexNut { thread, .. } => thread.hand = hand,
+                    _ => unreachable!(),
+                }
+            }
+            for _ in 0..head {
+                washer(
+                    &mut request,
+                    ScrewConnectionHardwareRole::HeadWasher,
+                    3.4,
+                    6.,
+                    0.2,
+                );
+            }
+            washer(
+                &mut request,
+                ScrewConnectionHardwareRole::NutWasher,
+                3.4,
+                6.,
+                0.2,
+            );
+            let before = document.clone();
+            let (candidate, model) = prepare(&document, &request).unwrap();
+            let check = &model.snapshot().screw_connection_checks[0];
+            assert_eq!(check.hardware_instances.len(), 3 + head);
+            near(check.actual_engagement_mm.unwrap(), 2.4);
+            let screw = model
+                .leaf_snapshot(&OccurrencePath {
+                    root: request.hardware[0].instance,
+                    members: vec![],
+                })
+                .unwrap();
+            near(screw.pose.translation_mm[2], 3.1 + 0.2 * head as f64);
+            let receiver = model
+                .leaf_solid(&request.receivers[0].source.occurrence)
+                .unwrap();
+            let volume = 1640.
+                - std::f64::consts::PI
+                    * (1.7_f64.powi(2) * 4.1 + 3.5_f64.powi(2) - 1.7_f64.powi(2));
+            near(receiver.volume_mm3().unwrap(), volume);
+            assert_eq!(receiver.faces().unwrap().len(), 9);
+            receiver
+                .manufacturing_mesh_with_receipt(Default::default())
+                .unwrap();
+            let folder = tempfile::tempdir().unwrap();
+            let path = folder.path().join("seated-stock.step");
+            receiver.write_step(&path).unwrap();
+            let imported = multicad_kernel::Solid::read_step(&path, Default::default()).unwrap();
+            near(imported.volume_mm3().unwrap(), volume);
+            assert_eq!(
+                read_screw_connection_request(&candidate, request.connection).unwrap(),
+                request
+            );
+            assert_eq!(document, before);
+        }
+    }
+}
+
+#[test]
+fn a_washer_cannot_intersect_the_vertical_counterbore_wall() {
+    let (document, mut request, _) = fixture::fixture();
+    request.receivers[0].source.seat = Some(ConnectionReceiverSeat::Counterbore {
+        diameter: length(7.),
+        depth: length(1.),
+    });
+    washer(
+        &mut request,
+        ScrewConnectionHardwareRole::HeadWasher,
+        3.4,
+        8.,
+        0.2,
+    );
+    let before = document.clone();
+    let error = prepare(&document, &request).err().unwrap();
+    assert!(error.contains("counterbore wall"), "{error}");
+    assert_eq!(document, before);
+}
 #[test]
 fn washers_cannot_hide_floating_bearings_shaft_interference_or_short_engagement() {
     for (bore, outer, thick, expected) in [
@@ -334,7 +426,20 @@ fn a_plain_shank_can_end_inside_a_nut_washer_before_the_actual_nut() {
 
 #[test]
 fn real_washer_material_follows_a_proper_placed_receiving_frame() {
+    proper_receiving_frame(false);
+}
+#[test]
+fn seated_washers_bear_on_the_shoulder_in_a_proper_placed_receiving_frame() {
+    proper_receiving_frame(true);
+}
+fn proper_receiving_frame(seated: bool) {
     let (document, mut request, stock) = fixture::fixture();
+    if seated {
+        request.receivers[0].source.seat = Some(ConnectionReceiverSeat::Counterbore {
+            diameter: length(7.),
+            depth: length(1.),
+        });
+    }
     washer(
         &mut request,
         ScrewConnectionHardwareRole::HeadWasher,
@@ -373,7 +478,10 @@ fn real_washer_material_follows_a_proper_placed_receiving_frame() {
             .unwrap(),
         2.4,
     );
-    for (index, original) in [(2, [10., 10., 4.3]), (3, [10., 10., 0.])] {
+    for (index, original) in [
+        (2, [10., 10., if seated { 3.3 } else { 4.3 }]),
+        (3, [10., 10., 0.]),
+    ] {
         let path = OccurrencePath {
             root: request.hardware[index].instance,
             members: vec![],

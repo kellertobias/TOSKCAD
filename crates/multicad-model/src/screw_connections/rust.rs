@@ -59,7 +59,7 @@ fn through_nut(
     let fail = |message: &str| error(Some(id), message);
     let unsupported = || {
         fail(
-            "Rust screw connection requires one unseated through bore, generated screw and nut, and optional generated flat washers",
+            "Rust screw connection requires one through bore, generated screw and nut, and optional generated flat washers",
         )
     };
     let [receiver] = source.receivers.as_slice() else {
@@ -240,6 +240,7 @@ fn through_nut(
             (shank_radius_mm + head.neck_radius_mm()).max(shaft),
             head.minimum_radius_mm(),
         ],
+        head_extent: head.maximum_radius_mm(),
         nut: [nut_thread.spec().major_radius_mm, across_flats_mm / 2.],
         shaft,
         policy: input.policy,
@@ -249,7 +250,7 @@ fn through_nut(
     at(
         axis,
         placed_frame(&screw.part, screw.pose),
-        -head_washers,
+        bore.head_seat.map_or(0., |seat| seat.depth_mm) - head_washers,
         tolerance,
         id,
     )?;

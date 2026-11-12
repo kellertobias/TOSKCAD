@@ -54,6 +54,7 @@ fn verifies_the_authored_m3_through_receiver_without_native_geometry() {
     assert_eq!(proof.mouths_mm, [[10., 10., 4.1], [10., 10., 0.]]);
     assert_eq!(proof.radius_mm, 1.7);
     assert_eq!(proof.protected_radius_mm, 2.7);
+    assert_eq!(proof.head_seat, None);
     assert_eq!(receiver.solid_count().unwrap(), 1);
     assert_eq!(receiver.bounds().unwrap(), stock.bounds().unwrap());
     let analytic = stock.volume_mm3().unwrap() - std::f64::consts::PI * 1.7_f64.powi(2) * 4.1;
@@ -105,7 +106,27 @@ fn verifies_the_authored_m3_through_receiver_without_native_geometry() {
             .err()
             .unwrap()
             .message
-            .contains("unseated round through bore")
+            .contains("round through bore")
+    );
+    let mut seated = source.source.clone();
+    seated.seat = Some(model::ConnectionReceiverSeat::Counterbore {
+        diameter: length(7.),
+        depth: length(1.),
+    });
+    let (seated_stock, seated_proof) = run(&seated).unwrap();
+    assert_eq!(
+        seated_proof.head_seat,
+        Some(FlatSeatProof {
+            radius_mm: 3.5,
+            depth_mm: 1.
+        })
+    );
+    assert_eq!(seated_proof.mouths_mm, proof.mouths_mm);
+    assert!(
+        (seated_stock.volume_mm3().unwrap()
+            - (analytic - std::f64::consts::PI * (3.5_f64.powi(2) - 1.7_f64.powi(2))))
+        .abs()
+            < 1e-6
     );
     assert_eq!(stock.volume_mm3().unwrap(), 1640.);
 }
