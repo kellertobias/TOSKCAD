@@ -2,6 +2,8 @@
 //! A manifold boundary is not yet a certified occupied radial solid.
 pub use crate::tapered_thread::Error;
 use crate::tapered_thread::{RetainedTensor, interval::I};
+mod authored;
+pub use authored::AuthoredBoundary;
 mod axial;
 mod topology;
 pub use axial::AxialBoundary;

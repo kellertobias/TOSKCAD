@@ -30,6 +30,17 @@ pub(crate) struct Prepared {
     pub points: Vec<Vec<Point>>,
     placement: Placement,
 }
+impl Prepared {
+    pub(crate) fn point(&self, [x, y, z]: Point) -> Point {
+        self.placement.point_f64([x, y], z)
+    }
+    pub(crate) fn normal(&self) -> Point {
+        self.placement.normal
+    }
+    pub(crate) fn reference(&self) -> Point {
+        self.placement.u
+    }
+}
 
 fn dot_i(a: [I; 3], b: [I; 3]) -> I {
     a.into_iter()
@@ -45,12 +56,20 @@ fn cross_i(a: [I; 3], b: [I; 3]) -> [I; 3] {
 }
 
 fn prepare(thread: &Thread, placement: Placement, tolerance: f64) -> Result<Prepared, StepError> {
+    prepare_controlled(thread, placement, tolerance, None)
+}
+fn prepare_controlled(
+    thread: &Thread,
+    placement: Placement,
+    tolerance: f64,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<Prepared, StepError> {
     if !tolerance.is_finite() || tolerance <= 0. {
         return Err(StepError::InvalidGeometry);
     }
     let tolerance = tolerance.min(thread.tolerance_mm()).min(1e-7);
     let tensors = thread
-        .manufacturing_tensors(tolerance, None)
+        .manufacturing_tensors(tolerance, interrupt)
         .map_err(map_error)?;
     let axes = [placement.u, placement.v, placement.normal].map(|v| v.map(I::point));
     let inverse = [
@@ -96,7 +115,10 @@ fn prepare(thread: &Thread, placement: Placement, tolerance: f64) -> Result<Prep
         for tensor in tensors.walls() {
             let mut world = Vec::with_capacity(tensor.poles().len());
             let mut chart = Vec::with_capacity(tensor.poles().len());
-            for &[x, y, z] in tensor.poles() {
+            for (index, &[x, y, z]) in tensor.poles().iter().enumerate() {
+                if index % 128 == 0 && interrupt.is_some_and(|f| f()) {
+                    return Err(StepError::Unsupported);
+                }
                 let local = [x * cos - y * sin, x * sin + y * cos, z];
                 let ideal = [
                     I::point(x) * ci - I::point(y) * si,
@@ -130,12 +152,42 @@ fn prepare(thread: &Thread, placement: Placement, tolerance: f64) -> Result<Prep
         }
     }
     thread
-        .certify_manufacturing_charts(&tensors, &charts, None)
+        .certify_manufacturing_charts(&tensors, &charts, interrupt)
         .map_err(map_error)?;
     Ok(Prepared {
         tensors,
         points,
         placement,
+    })
+}
+
+/// Reuse the writer's original source preparation without serializing STEP.
+/// The sticky wrapper preserves typed cancellation across its older STEP
+/// error adapter; a cancelled proof is never returned as prepared geometry.
+pub(crate) fn source_nets_with_interrupt(
+    thread: &Thread,
+    frame: [Point; 3],
+    tolerance: f64,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<Prepared, Error> {
+    let cancelled = std::cell::Cell::new(false);
+    let stop = || {
+        let value = cancelled.get() || interrupt.is_some_and(|f| f());
+        cancelled.set(value);
+        value
+    };
+    if stop() {
+        return Err(Error::Cancelled);
+    }
+    let result = Placement::new(frame[0], frame[1], frame[2])
+        .and_then(|placement| prepare_controlled(thread, placement, tolerance, Some(&stop)));
+    if cancelled.get() {
+        return Err(Error::Cancelled);
+    }
+    result.map_err(|error| match error {
+        StepError::Limit => Error::Limit,
+        StepError::InvalidPlacement | StepError::InvalidGeometry => Error::Invalid,
+        StepError::Unsupported => Error::Unsupported,
     })
 }
 
