@@ -345,9 +345,12 @@ fn concentric_circular_edges_keep_exact_scalar_and_do_not_invent_unique_axis_com
         .unwrap();
     let evaluation = measure_model(&rust, &query(&rust));
     evaluation.stamp.check(s.document(), s.revision()).unwrap();
-    let failure = evaluation.result.unwrap_err();
-    assert_eq!(failure.kind, MeasurementFailureKind::Unsupported);
-    assert!(failure.message.contains("straight edges"));
+    let value = evaluation.result.unwrap();
+    near(value.minimum_mm, 5.);
+    assert_eq!(value.total_solutions, None);
+    assert!(!value.witnesses_complete);
+    assert_eq!(value.axis_components_mm, None);
+    assert!(value.axis_warning.is_some());
 }
 #[test]
 fn native_worker_reuses_current_source_queries_and_updates_and_removes_pins_without_stale_values() {

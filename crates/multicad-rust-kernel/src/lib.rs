@@ -4,6 +4,7 @@ pub mod annulus;
 pub mod axial_profile_stack;
 pub mod bevel_gear;
 pub mod chamfered_bores;
+pub mod circular_distance;
 pub mod circular_pockets;
 pub mod cosmetic_fastener;
 pub mod curved_projection;

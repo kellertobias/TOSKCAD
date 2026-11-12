@@ -4,6 +4,7 @@ use crate::{GeometryError, GeometryErrorKind, Solid, ffi};
 mod circular;
 mod machined;
 mod planar;
+mod rings;
 mod rounded;
 mod sphere;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +63,9 @@ pub(crate) fn measure(
             ));
         }
         if let Some(result) = sphere::measure(a, selection_a, b, selection_b, tolerance) {
+            return result;
+        }
+        if let Some(result) = rings::measure(a, selection_a, b, selection_b, tolerance) {
             return result;
         }
         if let Some(result) = rounded::measure(a, selection_a, b, selection_b, tolerance) {
