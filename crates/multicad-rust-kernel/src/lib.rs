@@ -1,5 +1,7 @@
 //! Bounded exact lengths and one analytic curve probe for the kernel study.
 
+mod exact_binary;
+
 pub mod annulus;
 pub mod axial_profile_stack;
 pub mod bevel_gear;

@@ -3,6 +3,7 @@ use crate::{Circle, Error, Rational};
 
 mod point_distance;
 pub use point_distance::PointDistance;
+pub mod parallel_cylinder;
 pub mod parallel_prism;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
