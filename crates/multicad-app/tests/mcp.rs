@@ -142,6 +142,90 @@ fn formula(expression: &str) -> Value {
 }
 
 #[test]
+fn default_app_validates_unplaced_pinned_geometry_without_changing_its_source() {
+    use multicad_core::{
+        commands::{Actor, Channel, Request, Session},
+        document::{Document, EntityData, Mutation},
+        model::{self, PrimitiveParameters, PrimitiveRequest},
+        project_file::{self, ProjectFile},
+        symbols::{self, SymbolAuthorRequest, SymbolKind},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    for invalid in [false, true] {
+        let actor = Actor::local(Channel::Ui);
+        let mut source = Session::new(Document::new("Pinned source").unwrap()).unwrap();
+        let stock = PrimitiveRequest::new(
+            "Box",
+            PrimitiveParameters::Box {
+                size: [10., 20., 5.].map(model::length),
+                frame: Default::default(),
+            },
+        );
+        let prepared =
+            model::prepare_primitive(&source, source.revision(), actor.clone(), &stock).unwrap();
+        source.commit(prepared.prepared).unwrap();
+        if invalid {
+            let mut entity = source.document().get(stock.feature).unwrap().clone();
+            let EntityData::Feature { definition, .. } = &mut entity.data else {
+                unreachable!()
+            };
+            let mut primitive = model::PrimitiveDefinition::from_definition(definition).unwrap();
+            let PrimitiveParameters::Box { size, .. } = &mut primitive.parameters else {
+                unreachable!()
+            };
+            size[0] = model::length(-10.);
+            *definition = primitive.definition().unwrap();
+            source
+                .apply(Request {
+                    expected_revision: source.revision(),
+                    actor: actor.clone(),
+                    label: "Invalid source box".into(),
+                    edits: vec![Mutation::Replace(entity)],
+                })
+                .unwrap();
+        }
+        let author =
+            SymbolAuthorRequest::new("Pinned box", stock.body, SymbolKind::Static, vec![], None);
+        let prepared =
+            symbols::prepare_author(&source, source.revision(), actor.clone(), &author).unwrap();
+        source.commit(prepared.prepared).unwrap();
+        let pinned = symbols::read_definition(source.document(), author.definition).unwrap();
+        let mut target = Session::new(Document::new("Unplaced pin").unwrap()).unwrap();
+        let prepared = symbols::prepare_import(&target, target.revision(), actor, &pinned).unwrap();
+        target.commit(prepared.prepared).unwrap();
+        assert_eq!(target.document().entities().count(), 1);
+        let project = directory.path().join(format!("unplaced-{invalid}.tcd"));
+        let mut bytes = vec![];
+        project_file::write(
+            &ProjectFile::new(target.document().clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        std::fs::write(&project, &bytes).unwrap();
+        let mut client = Client::start(&["--project", project.to_str().unwrap()]);
+        assert_eq!(
+            client.ok("document_info", json!({}))["geometry_backend"],
+            "rust"
+        );
+        let revision = client.revision();
+        if invalid {
+            let failure = client.fail("evaluate_model", json!({}));
+            assert!(failure.to_string().contains("Pinned symbol"), "{failure}");
+            assert!(
+                failure.to_string().to_lowercase().contains("positive"),
+                "{failure}"
+            );
+        } else {
+            let evaluated = client.ok("evaluate_model", json!({}));
+            assert_eq!(evaluated["parts"].as_array().unwrap().len(), 0);
+        }
+        assert_eq!(client.revision(), revision);
+        assert_eq!(std::fs::read(&project).unwrap(), bytes);
+    }
+}
+
+#[test]
 fn default_app_reopens_and_exports_both_sides_of_an_angled_planar_split() {
     use multicad_core::{
         commands::{Actor, Channel, Session},
