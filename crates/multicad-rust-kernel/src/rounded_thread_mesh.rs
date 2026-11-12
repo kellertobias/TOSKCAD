@@ -4,8 +4,10 @@ use crate::{
     rounded_thread::Thread,
 };
 use std::{collections::HashMap, f64::consts::TAU};
+mod bore;
 mod certificate;
 mod sampling;
+pub use bore::{bore_volume_error_bound, tessellate_bore, tessellate_bore_with_interrupt};
 use sampling::{Receipt, phase_strips};
 #[cfg(test)]
 mod tests;
@@ -29,12 +31,25 @@ pub fn tessellate_with_interrupt<'a>(
     options: Tessellation,
     interrupt: Option<&'a dyn Fn() -> bool>,
 ) -> Result<DisplayMesh, Error> {
+    tessellate_shape(thread, None, options, interrupt)
+}
+fn tessellate_shape<'a>(
+    thread: &'a Thread,
+    bore: Option<&crate::rounded_thread::ThroughBore>,
+    options: Tessellation,
+    interrupt: Option<&'a dyn Fn() -> bool>,
+) -> Result<DisplayMesh, Error> {
     options.check()?;
     let mut work = Work::new(interrupt);
     work.checkpoint()?;
     let receipt = Receipt::new(thread, options)?;
     let max_angle = (options.angle / 4.)
         .min((options.deflection / (2. * thread.spec().major_radius_mm)).sqrt());
+    let max_angle = if let Some(bore) = bore {
+        bore::max_angle(bore, options, max_angle)?
+    } else {
+        max_angle
+    };
     let count = (TAU / max_angle).ceil();
     if !count.is_finite() || count * 2. > options.triangle_limit as f64 {
         return Err(MeshError::BudgetExceeded.into());
@@ -43,7 +58,7 @@ pub fn tessellate_with_interrupt<'a>(
     loop {
         work.checkpoint()?;
         let strips = phase_strips(thread, TAU / steps as f64, options, receipt, &mut work)?;
-        match Builder::new(thread, steps, strips, options, receipt, &mut work).build() {
+        match Builder::new(thread, steps, strips, options, receipt, &mut work).build(bore) {
             Ok(mesh) => return Ok(mesh),
             Err(AttemptError::Failure(error)) => return Err(error),
             Err(AttemptError::Refine) => {
@@ -237,12 +252,19 @@ impl<'a, 'b> Builder<'a, 'b> {
         }
     }
 
-    fn build(mut self) -> Result<DisplayMesh, AttemptError> {
+    fn build(
+        mut self,
+        bore: Option<&crate::rounded_thread::ThroughBore>,
+    ) -> Result<DisplayMesh, AttemptError> {
         self.work.checkpoint()?;
         self.build_wall()?;
-        let caps = std::mem::take(&mut self.caps);
-        for (cap, ring) in caps.into_iter().enumerate() {
-            self.add_cap(cap, ring)?;
+        if let Some(bore) = bore {
+            self.add_bore(bore.radius_mm())?;
+        } else {
+            let caps = std::mem::take(&mut self.caps);
+            for (cap, ring) in caps.into_iter().enumerate() {
+                self.add_cap(cap, ring)?;
+            }
         }
         self.work.checkpoint()?;
         Ok(self.mesh)

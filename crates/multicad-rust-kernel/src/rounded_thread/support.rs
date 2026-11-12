@@ -124,7 +124,7 @@ impl Thread {
         )
     }
 }
-fn finish(bounds: [f64; 2], tolerance: f64) -> Result<[f64; 2], Error> {
+pub(super) fn finish(bounds: [f64; 2], tolerance: f64) -> Result<[f64; 2], Error> {
     if bounds.into_iter().any(|x| !x.is_finite())
         || bounds[0] > bounds[1]
         || (bounds[1] - bounds[0]).next_up() > tolerance
@@ -133,10 +133,10 @@ fn finish(bounds: [f64; 2], tolerance: f64) -> Result<[f64; 2], Error> {
     }
     Ok(bounds)
 }
-fn product(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
+pub(super) fn product(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     [(a[0] * b[0]).next_down().max(0.), (a[1] * b[1]).next_up()]
 }
-fn radial_interval(x: f64, y: f64) -> [f64; 2] {
+pub(super) fn radial_interval(x: f64, y: f64) -> [f64; 2] {
     let m = x.abs().max(y.abs());
     let ratio = |v: f64| {
         if v == 0. {

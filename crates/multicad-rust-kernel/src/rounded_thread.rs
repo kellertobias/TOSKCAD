@@ -3,8 +3,10 @@
 //! inferred manufacturing mesh defines the occupied material.
 use std::f64::consts::{PI, TAU};
 
+mod bore;
 mod metrics;
 mod support;
+pub use bore::ThroughBore;
 pub use metrics::Properties;
 #[cfg(test)]
 mod tests;
