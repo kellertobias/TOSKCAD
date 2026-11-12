@@ -148,6 +148,54 @@ pub(crate) fn build_rust(
     {
         return cosmetic::shaft(feature, &thread, policy);
     }
+    if thread.representation == ThreadRepresentation::Modeled
+        && rounded_family(source.parameters.family)
+    {
+        if source.mode != ThreadMode::NewExternal {
+            return Err(fail(
+                "Rust double-rounded threads currently require standalone NewExternal; receiving closures are not certified",
+            ));
+        }
+        if thread.profile.radial_taper != 0. || thread.starts != 1 {
+            return Err(fail(
+                "Rust double-rounded threads require a straight single-start profile",
+            ));
+        }
+        if thread
+            .end_treatments
+            .as_ref()
+            .is_some_and(|e| e.start_chamfer_radial_depth_mm != 0. || e.end_relief_length_mm != 0.)
+        {
+            return Err(fail("Rounded thread end treatments are not yet certified"));
+        }
+        let (crest, root) = if let Some(round) = &thread.round {
+            (round.cutter_crest_radius_mm, round.cutter_root_radius_mm)
+        } else {
+            let radius = thread
+                .profile
+                .rounding_radius_mm
+                .ok_or_else(|| fail("Canonical rounded thread has no circular profile"))?;
+            (radius, radius)
+        };
+        let spec = multicad_kernel::rust_kernel::rounded_thread::Spec {
+            major_radius_mm: thread.major_radius_mm,
+            pitch_mm: thread.pitch_mm,
+            length_mm: thread.length_mm,
+            depth_mm: thread.profile.depth_mm,
+            crest_radius_mm: crest,
+            root_radius_mm: root,
+            flank_angle_deg: thread.profile.lower_flank_deg,
+            starts: thread.starts,
+            left_hand: thread.hand == ThreadHand::Left,
+        };
+        let frame = PlaneFrame {
+            origin: thread.frame.origin,
+            u: thread.frame.u,
+            v: thread.frame.v,
+        };
+        return Solid::rust_rounded_thread(spec, feature, frame, policy)
+            .map_err(|cause| error(Some(feature), cause));
+    }
     validate_rust_family(feature, source.parameters.family)?;
     if thread.representation == ThreadRepresentation::CosmeticEnvelope
         && source.mode == ThreadMode::CutExternal
@@ -194,6 +242,18 @@ pub(crate) fn build_rust(
         Solid::rust_helical_thread(spec, root_radius, feature, frame, policy)
     };
     solid.map_err(|cause| error(Some(feature), cause))
+}
+
+fn rounded_family(family: ThreadFamily) -> bool {
+    matches!(
+        family,
+        ThreadFamily::Bsw | ThreadFamily::Bsf | ThreadFamily::Bspp | ThreadFamily::Round
+    )
+}
+/// Thread-tool mode availability; dimensions and closures still require proof.
+pub fn rust_thread_mode_supported(family: ThreadFamily, mode: ThreadMode) -> bool {
+    rust_thread_family_supported(family)
+        || (mode == ThreadMode::NewExternal && rounded_family(family))
 }
 
 pub(crate) fn validate_rust_family(

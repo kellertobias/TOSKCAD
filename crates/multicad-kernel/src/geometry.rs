@@ -31,6 +31,7 @@ mod planar_boolean_body;
 mod revolution_body;
 mod rounded_cylinder_body;
 mod rounded_slot_body;
+mod rounded_thread_body;
 mod rust_compound;
 mod sphere_body;
 mod spline_sweep_body;
@@ -62,6 +63,8 @@ use planar_boolean_body::PlanarBooleanBody;
 use revolution_body::RevolutionBody;
 use rounded_cylinder_body::RoundedCylinderBody;
 use rounded_slot_body::RoundedSlotBody;
+use rounded_thread_body::RoundedThreadBody;
+pub use rounded_thread_body::{RoundedThreadData, RoundedThreadMassProperties};
 use rust_compound::RustCompound;
 use sphere_body::SphereBody;
 use spline_sweep_body::SplineSweepBody;
@@ -622,6 +625,7 @@ enum SolidBody {
     Annulus(Rc<AnnulusBody>, PlaneFrame),
     CosmeticFastener(Rc<CosmeticFastenerBody>, PlaneFrame),
     Helical(Rc<HelicalBody>, PlaneFrame),
+    RoundedThread(Rc<RoundedThreadBody>, PlaneFrame),
     HelicalTubeCut(Rc<HelicalTubeBody>, PlaneFrame),
     Linear(Rc<LinearBody>, PlaneFrame),
     Revolved(Rc<RevolutionBody>, PlaneFrame),
@@ -1072,6 +1076,9 @@ impl Solid {
                 SolidBody::CosmeticFastener(Rc::clone(body), *frame)
             }
             SolidBody::Helical(body, frame) => SolidBody::Helical(Rc::clone(body), *frame),
+            SolidBody::RoundedThread(body, frame) => {
+                SolidBody::RoundedThread(Rc::clone(body), *frame)
+            }
             SolidBody::HelicalTubeCut(body, frame) => {
                 SolidBody::HelicalTubeCut(Rc::clone(body), *frame)
             }
@@ -1409,6 +1416,15 @@ impl Solid {
                     )?;
                     SolidBody::Annulus(Rc::clone(body), frame)
                 }
+                SolidBody::RoundedThread(body, frame) => {
+                    let frame = transform.frame(*frame);
+                    let spec = body.geometry.spec();
+                    frame.checked_metric_extent(
+                        [spec.major_radius_mm, spec.major_radius_mm, spec.length_mm],
+                        self.policy,
+                    )?;
+                    SolidBody::RoundedThread(Rc::clone(body), frame)
+                }
                 SolidBody::Helical(body, frame) => {
                     let frame = transform.frame(*frame);
                     frame.checked_metric_bounds(body.bounds(PlaneFrame::default()), self.policy)?;
@@ -1586,6 +1602,9 @@ impl Solid {
         if let Some((body, _)) = self.annulus_body() {
             return Ok(body.geometry.volume_mm3());
         }
+        if let Some((body, _)) = self.rounded_thread_body() {
+            return Ok(body.geometry.volume_mm3());
+        }
         if let Some((body, _)) = self.helical_body() {
             return Ok(body.volume_mm3());
         }
@@ -1693,6 +1712,9 @@ impl Solid {
         }
         if let Some((body, frame)) = self.annulus_body() {
             return Ok(body.bounds(frame));
+        }
+        if let Some((body, frame)) = self.rounded_thread_body() {
+            return body.bounds(frame);
         }
         if let Some((body, frame)) = self.helical_body() {
             return Ok(body.bounds(frame));
@@ -1848,6 +1870,9 @@ impl Solid {
         if let Some((body, frame)) = self.annulus_body() {
             return Ok(body.faces(frame));
         }
+        if let Some((body, frame)) = self.rounded_thread_body() {
+            return body.faces(frame);
+        }
         if let Some((body, frame)) = self.helical_body() {
             return Ok(body.faces(frame));
         }
@@ -1959,6 +1984,7 @@ impl Solid {
                 false,
             ),
             SolidBody::Helical(body, frame) => body.mesh(*frame, rust_options),
+            SolidBody::RoundedThread(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::HelicalTubeCut(body, frame) => {
                 crate::rust_display::placed_mesh(body.cut.mesh(rust_options), *frame, false)
             }
@@ -2139,7 +2165,9 @@ impl Solid {
                 curved_area += face.area_mm2;
             }
         }
-        let chord_error = if let Some((body, _)) = self.helical_body() {
+        let chord_error = if let Some((body, _)) = self.rounded_thread_body() {
+            body.volume_error_bound(Self::rust_mesh_options(options))?
+        } else if let Some((body, _)) = self.helical_body() {
             body.volume_error_bound(Self::rust_mesh_options(options))
         } else if let Some((body, _)) = self.revolution_body() {
             multicad_rust_kernel::revolution_mesh::volume_error_bound(
@@ -2212,7 +2240,9 @@ impl Solid {
             None => (Vec::new(), Vec::new()),
             Some(deflection) if self.uses_rust_geometry() => {
                 self.validate_display_deflection(deflection)?;
-                let edges = if let Some((body, frame)) = self.helical_body() {
+                let edges = if let Some((body, frame)) = self.rounded_thread_body() {
+                    body.display_edges(frame, deflection)?
+                } else if let Some((body, frame)) = self.helical_body() {
                     body.display_edges(frame, deflection)?
                 } else if let Some(compound) = self.rust_compound() {
                     compound.display_edges(deflection)?
@@ -2242,6 +2272,9 @@ impl Solid {
 
     pub fn display_edges(&self, deflection_mm: f64) -> Result<Vec<DisplayEdge>, GeometryError> {
         self.validate_display_deflection(deflection_mm)?;
+        if let Some((body, frame)) = self.rounded_thread_body() {
+            return body.display_edges(frame, deflection_mm);
+        }
         if let Some((body, frame)) = self.helical_body() {
             return body.display_edges(frame, deflection_mm);
         }
@@ -2323,6 +2356,7 @@ impl Solid {
             SolidBody::AxialCylinder(cylinder, ..) => EntityId::from_uuid_bits(cylinder.feature()),
             SolidBody::Annulus(body, _) => body.feature,
             SolidBody::Helical(body, _) => body.feature,
+            SolidBody::RoundedThread(body, _) => body.feature,
             SolidBody::HelicalTubeCut(body, _) => body.feature,
             SolidBody::CosmeticFastener(body, _) => body.feature,
             SolidBody::Linear(body, _) => body.feature,
@@ -2356,7 +2390,7 @@ impl Solid {
 
     fn supports_step_shell(&self, standalone: bool) -> bool {
         match &self.body {
-            SolidBody::NormalRelief(..) => true,
+            SolidBody::NormalRelief(..) | SolidBody::RoundedThread(..) => true,
             SolidBody::Occt(_)
             | SolidBody::PolygonPrism(_)
             | SolidBody::AxialCylinder(..)
@@ -2571,6 +2605,7 @@ impl Solid {
                 Ok(())
             }
             SolidBody::Helical(body, frame) => body.append_step(writer, *frame, self.policy),
+            SolidBody::RoundedThread(body, frame) => body.append_step(writer, *frame, self.policy),
             SolidBody::Sphere(body, frame) => {
                 writer.append_sphere(body.geometry, frame.origin, frame.u, frame.v)
             }

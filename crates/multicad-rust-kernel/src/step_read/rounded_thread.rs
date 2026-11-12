@@ -250,3 +250,40 @@ pub(super) fn verify_member(
 
 #[cfg(test)]
 mod tests;
+
+/// Narrow authored-class admission, after the existing legacy providers.
+pub(super) fn recognize_member(
+    shell: &mut Shell<'_, '_>,
+    id: u32,
+    faces: &[u32],
+) -> Result<Option<(Readback, ImportSolid)>> {
+    if faces.len() != 7 {
+        return Ok(None);
+    }
+    let mut count = 0;
+    for &id in faces {
+        let (surface, _, _) = face(shell, id)?;
+        let e = shell.simple(surface)?;
+        if e.name == "B_SPLINE_SURFACE_WITH_KNOTS"
+            && e.args.get(1..3)
+                == Some(&[Value::Number(DEGREE as f64), Value::Number(DEGREE as f64)])
+        {
+            count += 1;
+        }
+    }
+    if count != 5 {
+        return Ok(None);
+    }
+    let (proof, body) = import::read_member(shell, id)?;
+    let spec = body.thread.spec();
+    Ok(Some((
+        proof,
+        ImportSolid {
+            origin_mm: body.origin_mm,
+            u: body.u,
+            v: body.v,
+            height_mm: spec.length_mm,
+            profile: ImportProfile::RoundedThread { spec },
+        },
+    )))
+}

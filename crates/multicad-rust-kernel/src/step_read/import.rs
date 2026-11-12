@@ -28,6 +28,10 @@ use pocketed::{PocketRim, canonical_pockets};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ImportProfile {
+    /// Five independently proved double-rounded helical shaft patches and both finite caps.
+    RoundedThread {
+        spec: crate::rounded_thread::Spec,
+    },
     /// Independently proved helical prefix, upward shoulder and terminal neck.
     ThreadEndRelief {
         tool_spec: crate::helical_thread::Spec,

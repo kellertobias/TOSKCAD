@@ -3207,3 +3207,160 @@ fn rust_stdio_metric_terminal_relief_edit_history_export_and_reopen() {
     );
     close(receipt["readback_volume_mm3"].as_f64().unwrap(), edited);
 }
+
+#[test]
+fn rust_stdio_rounded_families_edit_history_export_blind_import_and_reopen() {
+    use multicad_core::model::{self, ThreadFamily};
+    for family in [
+        ThreadFamily::Bsw,
+        ThreadFamily::Bsf,
+        ThreadFamily::Bspp,
+        ThreadFamily::Round,
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("rounded.tcd");
+        let import_project = directory.path().join("imported-rounded.tcd");
+        let args = [
+            "--rust-model",
+            "--project",
+            project.to_str().unwrap(),
+            "--export-dir",
+            directory.path().to_str().unwrap(),
+        ];
+        let mut client = Client::start(&args);
+        let (diameter, pitch, fit, family_name) = if family == ThreadFamily::Round {
+            let p = model::round_thread_presets()[1].parameters();
+            let s = multicad_core::commands::Session::new(
+                multicad_core::document::Document::new("resolve Rd").unwrap(),
+            )
+            .unwrap();
+            let r = p
+                .resolve(s.parameters(), model::ThreadMode::NewExternal)
+                .unwrap();
+            (
+                2. * r.nominal_major_radius_mm,
+                r.pitch_mm,
+                "nominal_basic",
+                "round",
+            )
+        } else {
+            let p = model::whitworth_thread_presets()
+                .into_iter()
+                .find(|p| p.family == family)
+                .unwrap();
+            (
+                p.diameter_mm,
+                p.pitch_mm,
+                if family == ThreadFamily::Bspp {
+                    "bspp_class_b_external"
+                } else {
+                    "whitworth_medium_external"
+                },
+                match family {
+                    ThreadFamily::Bsw => "bsw",
+                    ThreadFamily::Bsf => "bsf",
+                    _ => "bspp",
+                },
+            )
+        };
+        let profiles = client.ok("thread_profiles", json!({}));
+        let capabilities = profiles["families"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["family"] == family_name)
+            .unwrap();
+        assert_eq!(capabilities["modeled_new_external_supported"], true);
+        assert_eq!(
+            capabilities["modeled_new_external_fit_classes"],
+            json!([fit])
+        );
+        assert_eq!(capabilities["supported"], false); // Legacy field still means the complete family, including receivers.
+        let imperial = matches!(family, ThreadFamily::Bsw | ThreadFamily::Bsf);
+        let diameter_input = if imperial {
+            json!({"value":diameter/25.4,"unit":"in"})
+        } else {
+            length(diameter)
+        };
+        let pitch_input = if imperial {
+            json!({"value":pitch/25.4,"unit":"in"})
+        } else {
+            length(pitch)
+        };
+        let revision = client.revision();
+        let create_started = std::time::Instant::now();
+        let created=client.ok("set_thread",json!({"expected_revision":revision,"name":"Sourced rounded shaft","family":family_name,"major_diameter":diameter_input,"pitch":pitch_input,"length":length(2.37*pitch),"fit":fit,"hand":"left","axis_u":[0.8,0.6,0.],"axis_v":[-0.36,0.48,0.8],"origin":[length(17.),length(-8.),length(13.)]}));
+        println!(
+            "{family_name} normal stdio create elapsed {:?}",
+            create_started.elapsed()
+        );
+        let first = client.part_volume();
+        let revision = client.revision();
+        client.ok("set_thread",json!({"expected_revision":revision,"thread":created["thread"],"length":length(3.43*pitch)}));
+        let edited = client.part_volume();
+        assert!(edited > first);
+        let report = client.ok("inspect_thread", json!({"thread":created["thread"]}));
+        assert_eq!(report["source"]["parameters"]["family"], family_name);
+        assert_eq!(report["source"]["parameters"]["fit"], fit);
+        assert_eq!(
+            report["source"]["parameters"]["pitch"]["unit"],
+            if imperial { "in" } else { "mm" }
+        );
+        assert_eq!(
+            report["source"]["parameters"]["major_diameter"]["unit"],
+            if imperial { "in" } else { "mm" }
+        );
+        close(
+            report["resolved"]["physical_length_mm"].as_f64().unwrap(),
+            3.43 * pitch,
+        );
+        let revision = client.revision();
+        client.ok("undo", json!({"expected_revision":revision}));
+        close(client.part_volume(), first);
+        let revision = client.revision();
+        client.ok("redo", json!({"expected_revision":revision}));
+        close(client.part_volume(), edited);
+        let revision = client.revision();
+        client.fail(
+            "set_thread",
+            json!({"expected_revision":revision,"thread":created["thread"],"starts":2}),
+        );
+        assert_eq!(client.revision(), revision);
+        close(client.part_volume(), edited);
+        let receipt = client.ok(
+            "export_step",
+            json!({"part":created["part"],"file_name":"rounded.step"}),
+        );
+        close(receipt["readback_volume_mm3"].as_f64().unwrap(), edited);
+        client.ok("save_project", json!({"expected_revision":revision}));
+        drop(client);
+        let mut reopened = Client::start(&args);
+        close(reopened.part_volume(), edited);
+        drop(reopened);
+        let import_args = [
+            "--rust-model",
+            "--project",
+            import_project.to_str().unwrap(),
+            "--export-dir",
+            directory.path().to_str().unwrap(),
+        ];
+        let mut imported = Client::start(&import_args);
+        let revision = imported.revision();
+        let result = imported.ok(
+            "import_step",
+            json!({"expected_revision":revision,"file_name":"rounded.step"}),
+        );
+        let part = result["parts"][0].clone();
+        close(imported.part_volume(), edited);
+        let revision = imported.revision();
+        imported.ok("save_project", json!({"expected_revision":revision}));
+        drop(imported);
+        let mut reopened = Client::start(&import_args);
+        close(reopened.part_volume(), edited);
+        let receipt = reopened.ok(
+            "export_step",
+            json!({"part":part,"file_name":"rounded-reimported.step"}),
+        );
+        close(receipt["readback_volume_mm3"].as_f64().unwrap(), edited);
+    }
+}

@@ -3,7 +3,9 @@
 //! inferred manufacturing mesh defines the occupied material.
 use std::f64::consts::{PI, TAU};
 
+mod metrics;
 mod support;
+pub use metrics::Properties;
 #[cfg(test)]
 mod tests;
 
@@ -241,6 +243,12 @@ impl Thread {
         let n = [r * cos - a * sin, r * sin + a * cos, -r * slope];
         let length = n[0].hypot(n[1]).hypot(n[2]);
         n.map(|x| x / length)
+    }
+    /// Smooth-band quadrature with closed axial Fourier integration. Face
+    /// properties and full centroidal second moments are computed on demand;
+    /// neither axial symmetry nor an integer number of turns is assumed.
+    pub fn properties(&self) -> Result<Properties, Error> {
+        metrics::compute(self)
     }
     /// Exact analytic radial moments integrated over one complete phase period.
     /// The area is constant at every axial level, including fractional turns.

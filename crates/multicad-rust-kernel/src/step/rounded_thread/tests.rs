@@ -324,3 +324,42 @@ fn affine_rotation_factory_proves_shared_endpoints_and_recovers_from_real_numeri
     assert_eq!(again.poles, good.poles);
     assert_eq!(again.knots, good.knots);
 }
+
+#[test]
+fn generic_import_and_analytic_readback_keep_rounded_and_legacy_members_distinct() {
+    let t = thread(true, true, true);
+    let origin = [17., -8., 13.];
+    let u = [0.8, 0.6, 0.];
+    let v = [-0.36, 0.48, 0.8];
+    let file = write_rounded_thread(&t, origin, u, v, 1e-7).unwrap();
+    let (proof, imported) = crate::step_read::read_import_solid(&file, 1e-7).unwrap();
+    assert!(
+        matches!(imported.profile,crate::step_read::ImportProfile::RoundedThread{spec} if spec.left_hand)
+    );
+    assert_eq!(proof.face_count, 7);
+    let direct = crate::step_read::read_analytic_solid(&file, 1e-7).unwrap();
+    assert_eq!(direct.volume_mm3, proof.volume_mm3);
+    let mut writer = Writer::new();
+    writer
+        .append_rounded_thread(&t, origin, u, v, 1e-7)
+        .unwrap();
+    writer
+        .append_sphere(
+            crate::sphere::Sphere::new(2.).unwrap(),
+            [40., 0., 0.],
+            [1., 0., 0.],
+            [0., 1., 0.],
+        )
+        .unwrap();
+    let file = writer.finish().unwrap();
+    let members = crate::step_read::read_import_compound(&file, 1e-7).unwrap();
+    assert_eq!(members.len(), 2);
+    assert!(matches!(
+        members[0].1.profile,
+        crate::step_read::ImportProfile::RoundedThread { .. }
+    ));
+    assert!(matches!(
+        members[1].1.profile,
+        crate::step_read::ImportProfile::Sphere { .. }
+    ));
+}

@@ -367,6 +367,9 @@ impl Solid {
         imported: &multicad_rust_kernel::step_read::ImportSolid,
         tolerance: f64,
     ) -> bool {
+        if self.rounded_thread_body().is_some() {
+            return self.matches_imported_rounded_thread(imported, tolerance);
+        }
         let Some((body, frame)) = self.helical_body() else {
             return false;
         };
@@ -652,6 +655,16 @@ impl Solid {
         &self,
         source: &str,
     ) -> Option<Result<f64, multicad_rust_kernel::step_read::ReadError>> {
+        if let Some((body, frame)) = self.rounded_thread_body() {
+            return Some(multicad_rust_kernel::step_read::verify_rounded_thread(
+                source,
+                &body.geometry,
+                frame.origin,
+                frame.u,
+                frame.v,
+                self.policy.linear_tolerance_mm,
+            ));
+        }
         let (body, frame) = self.helical_body()?;
         if let HelicalForm::External(stock) = &body.form
             && let Some(shaft) = &stock.partial
@@ -722,6 +735,9 @@ impl Solid {
     /// Query the modeled helical material in world coordinates.
     pub fn rust_thread_contains(&self, point_mm: Point) -> Result<bool, GeometryError> {
         self.policy.point(point_mm)?;
+        if let Some((body, frame)) = self.rounded_thread_body() {
+            return Ok(body.contains(frame, point_mm));
+        }
         let (body, frame) = self.helical_body().ok_or_else(|| {
             error(
                 OPERATION,

@@ -145,6 +145,17 @@ fn member_signature(readback: &Readback, imported: &ImportSolid) -> ContentHash 
             bytes.extend(if value == 0. { 0. } else { value }.to_le_bytes());
         }
     }
+    if let ImportProfile::RoundedThread { spec } = imported.profile {
+        bytes.extend(b"rounded-thread-material.v1");
+        let frame = PlaneFrame {
+            origin: imported.origin_mm,
+            u: imported.u,
+            v: imported.v,
+        };
+        for value in super::super::rounded_thread_body::identity_values(spec, frame) {
+            bytes.extend(if value == 0. { 0. } else { value }.to_le_bytes());
+        }
+    }
     if let ImportProfile::HelicalThread {
         spec,
         stock_radius_mm,

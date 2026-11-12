@@ -237,6 +237,9 @@ impl Solid {
         };
         frame.checked(policy)?;
         match profile {
+            ImportProfile::RoundedThread { spec } => {
+                Self::import_rounded_thread(spec, frame, feature, policy)
+            }
             ImportProfile::NormalRelief { relief } => {
                 Self::from_imported_normal_relief(relief, frame, feature, policy)
             }
@@ -1001,7 +1004,10 @@ fn verify(
     orthogonal: bool,
 ) -> Result<(), GeometryError> {
     verify_step_metrics(solid, readback, tolerance)?;
-    if solid.helical_body().is_some() || solid.helical_tube_cut_body().is_some() {
+    if solid.rounded_thread_body().is_some()
+        || solid.helical_body().is_some()
+        || solid.helical_tube_cut_body().is_some()
+    {
         // Typed helical imports are produced only after complete analytic
         // control-net/support and oriented edge-incidence proofs. Their exact
         // rebuilt feature can partition the same physical boundary differently.

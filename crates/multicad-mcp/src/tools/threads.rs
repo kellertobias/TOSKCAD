@@ -641,7 +641,14 @@ pub(super) fn thread_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolRe
             vec![ThreadFit::NominalBasic]
         } else {vec![]};
         let fit_classes = if rust && !multicad_model::rust_thread_family_supported(family) { vec![] } else { cosmetic_fit_classes.clone() };
+        let modeled_new_external_supported = if rust { multicad_model::rust_thread_mode_supported(family, ThreadMode::NewExternal) } else { family.supported() };
+        let modeled_new_external_fit_classes: Vec<_> = if modeled_new_external_supported {
+            cosmetic_fit_classes.iter().copied().filter(|fit| !matches!(fit,
+                ThreadFit::Metric6HInternal | ThreadFit::Unified2B | ThreadFit::WhitworthMediumInternal | ThreadFit::BsppInternal
+            )).collect()
+        } else { vec![] };
         json!({"family":family,"label":family.label(),"supported":!fit_classes.is_empty(),"source":family.source(),"fit_classes":fit_classes,
+            "modeled_new_external_supported":modeled_new_external_supported,"modeled_new_external_fit_classes":modeled_new_external_fit_classes,
             "cosmetic_new_external_supported":family.supported(),"cosmetic_fit_classes":cosmetic_fit_classes})
     }).collect();
     let unified_presets:Vec<_> = model::unified_thread_presets().into_iter().map(|p|json!({
