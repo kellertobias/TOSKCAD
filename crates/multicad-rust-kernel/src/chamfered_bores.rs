@@ -1,10 +1,12 @@
-//! Symmetric 45° chamfers on the cap rims of circular through-bores.
+//! Analytic cap treatments of circular through-bores, including flat seats.
 use crate::{
     Rational,
     circular_pockets::{PocketError, ring_contains_clear_disk},
     polygon::PolygonPrism,
 };
 use std::{f64::consts::PI, sync::Arc};
+mod counterbores;
+pub use counterbores::Counterbore;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BoreChamfer {
@@ -37,6 +39,7 @@ pub struct BoreStack {
 pub struct ChamferedBores {
     stock: Arc<PolygonPrism>,
     chamfers: Vec<BoreChamfer>,
+    counterbores: Vec<Counterbore>,
     stacks: Vec<BoreStack>,
     caps: [(f64, [f64; 2]); 2],
     volume_mm3: f64,
@@ -143,23 +146,23 @@ impl ChamferedBores {
                 std::array::from_fn(|axis| centroid[axis] - cap_moment[cap][axis] / area),
             )
         });
-        (volume_mm3.is_finite()
-            && volume_mm3 > 0.
-            && caps.iter().all(|(area, center)| {
-                area.is_finite() && *area > 0. && center.iter().all(|value| value.is_finite())
-            }))
-        .then(|| Self {
+        validate_measures(volume_mm3, &caps)?;
+        Ok(Self {
             stock: Arc::new(prism.clone()),
             chamfers,
+            counterbores: Vec::new(),
             stacks,
             caps,
             volume_mm3,
         })
-        .ok_or(UnresolvedBoundary)
     }
 
     pub fn chamfers(&self) -> &[BoreChamfer] {
         &self.chamfers
+    }
+
+    pub fn counterbores(&self) -> &[Counterbore] {
+        &self.counterbores
     }
 
     pub fn stacks(&self) -> &[BoreStack] {
@@ -176,6 +179,21 @@ impl ChamferedBores {
 
     pub(crate) fn belongs_to(&self, prism: &PolygonPrism) -> bool {
         *self.stock == *prism
+    }
+}
+
+// Shared scalar boundary: never publish non-finite or nonpositive material
+// measures, including when an upstream arithmetic operation overflows.
+fn validate_measures(volume: f64, caps: &[(f64, [f64; 2]); 2]) -> Result<(), PocketError> {
+    if volume.is_finite()
+        && volume > 0.
+        && caps.iter().all(|(area, center)| {
+            area.is_finite() && *area > 0. && center.iter().all(|x| x.is_finite())
+        })
+    {
+        Ok(())
+    } else {
+        Err(PocketError::UnresolvedBoundary)
     }
 }
 

@@ -487,6 +487,29 @@ impl Writer {
         )
     }
 
+    /// Append the actual certified circular cap treatments, including planar
+    /// counterbore shoulders. The receipt must belong to this exact stock.
+    pub fn append_treated_polygon_prism(
+        &mut self,
+        prism: &PolygonPrism,
+        bores: &ChamferedBores,
+        origin: Point,
+        u: Point,
+        v: Point,
+        reverse_sweep: bool,
+    ) -> Result<(), StepError> {
+        if !bores.belongs_to(prism) {
+            return Err(StepError::InvalidGeometry);
+        }
+        self.append_polygon(
+            prism,
+            &[],
+            bores.stacks(),
+            Placement::new(origin, u, v)?,
+            reverse_sweep,
+        )
+    }
+
     fn append_polygon(
         &mut self,
         prism: &PolygonPrism,

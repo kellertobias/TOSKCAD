@@ -1133,6 +1133,23 @@ fn round_wall(
     outward: bool,
 ) -> Result<Entity, StepError> {
     let rise = to.radius - from.radius;
+    if height == 0. {
+        if rise == 0. {
+            return Err(StepError::InvalidGeometry);
+        }
+        let up = (rise < 0.) == outward;
+        let (outer, inner) = if rise < 0. { (from, to) } else { (to, from) };
+        let bounds = [
+            circular_bound(file, outer.edge, up, true),
+            circular_bound(file, inner.edge, !up, false),
+        ];
+        return Ok(file.face(
+            &bounds,
+            outer.center,
+            normal.map(|n| if up { n } else { -n }),
+            reference,
+        ));
+    }
     let surface = if rise == 0. {
         let CircularRim { axis, radius, .. } = from;
         file.entity(format_args!("CYLINDRICAL_SURFACE('',{axis},{radius:.16E})"))
@@ -1223,3 +1240,6 @@ impl CylindricalTrim {
         ]
     }
 }
+
+#[cfg(test)]
+mod cap_treatment_tests;
