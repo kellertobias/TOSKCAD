@@ -24,7 +24,6 @@ pub(super) struct Segment {
     pub ends: [Knot; 2],
     pub active: bool,
     pub half: ConeHalf,
-    pub crest_shift: i64,
 }
 impl Chamfer {
     pub(super) fn phase_segments(&self) -> Result<Vec<Segment>, Error> {
@@ -55,7 +54,6 @@ impl Chamfer {
                 } else {
                     ConeHalf::Falling
                 };
-                let crest_shift = i64::from(half == ConeHalf::Rising);
                 let start = Knot::point(pair[0], a == Ordering::Equal, glue_a);
                 let end = Knot::point(pair[1], b == Ordering::Equal, glue_b);
                 if (a == Ordering::Less && b == Ordering::Greater)
@@ -67,14 +65,12 @@ impl Chamfer {
                         ends: [start, cut],
                         active: a == Ordering::Greater,
                         half,
-                        crest_shift,
                     });
                     result.push(Segment {
                         band,
                         ends: [cut, end],
                         active: b == Ordering::Greater,
                         half,
-                        crest_shift,
                     });
                 } else {
                     result.push(Segment {
@@ -82,7 +78,6 @@ impl Chamfer {
                         ends: [start, end],
                         active: a == Ordering::Greater || b == Ordering::Greater,
                         half,
-                        crest_shift,
                     });
                 }
             }

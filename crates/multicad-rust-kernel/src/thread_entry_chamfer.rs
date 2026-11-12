@@ -13,9 +13,11 @@ mod mesh;
 pub use mesh::{tessellate, tessellate_with_interrupt};
 mod phase;
 mod profile;
+mod properties;
 mod support;
 pub(crate) mod trim;
 mod volume;
+pub use properties::{FaceProperties, MassProperties, PropertiesOptions};
 
 pub type Point = [f64; 3];
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -82,14 +84,29 @@ pub enum ConeHalf {
     Rising,
     Falling,
 }
-/// Semantic roles retain the original thread's dense face ordinals.
+/// Dense semantic roles shared by the retained supports, queries and mesh.
+/// Source phase mappings are explicit; unrelated Thread/Shaft ordinals stay
+/// unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Face {
+    /// Material at source station zero, after cone clipping.
     EntryCap,
+    /// Prefix station F: a full cap without a neck, its annular shoulder
+    /// when a terminal neck is retained.
     EndCap,
-    ThreadBand { start: u32, band: u32 },
-    ConeHalf { start: u32, half: ConeHalf },
+    /// Band 0 is the falling flank, 1 the root, 2 the rising flank and 3
+    /// the crest. These are the retained STEP support roles, independent of
+    /// handedness; source phase increases around each start's profile.
+    ThreadBand {
+        start: u32,
+        band: u32,
+    },
+    ConeHalf {
+        start: u32,
+        half: ConeHalf,
+    },
     NeckWall,
+    /// The neck's actual far end at the original full source height H.
     FarCap,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -232,6 +249,26 @@ impl Chamfer {
     }
     pub fn face_count(&self) -> u32 {
         2 + 6 * self.tool.spec().starts + if self.terminal.is_some() { 2 } else { 0 }
+    }
+    /// Dense retained wall role for one local source phase band (0..=4).
+    /// The pre-crest band joins the preceding start's post-crest support.
+    pub fn wall_face_index(&self, start: u32, phase_band: usize) -> Option<u32> {
+        let count = self.tool.spec().starts;
+        if start >= count || phase_band > 4 {
+            return None;
+        }
+        Some(
+            2 + match phase_band {
+                0 => 4 * ((start + count - 1) % count) + 3,
+                1..=3 => 4 * start + phase_band as u32 - 1,
+                _ => 4 * start + 3,
+            },
+        )
+    }
+    pub fn cone_face_index(&self, start: u32, half: ConeHalf) -> Option<u32> {
+        (start < self.tool.spec().starts).then(|| {
+            2 + 4 * self.tool.spec().starts + 2 * start + u32::from(half == ConeHalf::Falling)
+        })
     }
     pub fn face(&self, index: u32) -> Option<Face> {
         let n = self.tool.spec().starts;

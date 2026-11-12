@@ -93,13 +93,10 @@ pub(super) fn prepare(
             return Err(Error::Cancelled);
         }
         let ends = trim.phase.map(|q| points[&key(body, trim.start, q)]);
-        let wall = match trim.band {
-            0 => 4 * ((trim.start + count - 1) % count) as usize + 3,
-            1 => 4 * trim.start as usize,
-            2 => 4 * trim.start as usize + 1,
-            3 => 4 * trim.start as usize + 2,
-            _ => 4 * trim.start as usize + 3,
-        };
+        let wall = (body
+            .wall_face_index(trim.start, trim.band)
+            .ok_or(Error::Unsupported)?
+            - 2) as usize;
         let period = if trim.band == 0 && trim.start == 0 {
             count
         } else {
@@ -111,7 +108,11 @@ pub(super) fn prepare(
             .with_endpoints(body, ends)?
             .surface_branch(body, period, domain)?;
         qualify_trim(body, &trim, tolerance)?;
-        let cone = 2 * trim.start as usize + usize::from(trim.half == ConeHalf::Falling);
+        let cone = (body
+            .cone_face_index(trim.start, trim.half)
+            .ok_or(Error::Unsupported)?
+            - 2
+            - 4 * count) as usize;
         if let Some(group) = groups.last_mut()
             && group.wall == wall
             && group.cone == cone

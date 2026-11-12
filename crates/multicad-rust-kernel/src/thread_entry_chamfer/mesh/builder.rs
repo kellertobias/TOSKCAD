@@ -683,21 +683,14 @@ pub(super) fn build(
             b.side(
                 strip,
                 false,
-                body.tool.face_index(i64::from(period), leaf.segment.band),
+                body.wall_face_index(period, leaf.segment.band)
+                    .ok_or(Error::Unresolved)?,
                 work,
             )?;
             if leaf.segment.active {
-                let crest = i64::from(period) + leaf.segment.crest_shift;
-                let start = if body.tool.spec().left_hand {
-                    crest
-                } else {
-                    -crest
-                }
-                .rem_euclid(i64::from(body.tool.spec().starts)) as u32;
-                let face = 2
-                    + 4 * body.tool.spec().starts
-                    + 2 * start
-                    + u32::from(leaf.segment.half == ConeHalf::Falling);
+                let face = body
+                    .cone_face_index(period, leaf.segment.half)
+                    .ok_or(Error::Unresolved)?;
                 b.side(strip, true, face, work)?;
             }
             Ok(())

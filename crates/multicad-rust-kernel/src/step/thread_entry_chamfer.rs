@@ -1,7 +1,7 @@
 //! Source-certified curved trims on the original helical and conical surfaces.
 use super::*;
 use crate::thread_entry_chamfer::{
-    Chamfer, ConeHalf, QueryOptions,
+    Chamfer, QueryOptions,
     trim::{self, Trim},
 };
 
