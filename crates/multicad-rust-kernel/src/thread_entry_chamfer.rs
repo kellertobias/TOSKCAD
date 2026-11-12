@@ -15,7 +15,12 @@ mod phase;
 mod profile;
 mod properties;
 mod support;
+mod topology;
 pub(crate) mod trim;
+pub use topology::{
+    BoundaryEdge, BoundaryFace, BoundaryTopology, EdgeUse, PhaseConstraint, PhaseEndpoint,
+    PointSample, SourceCurve,
+};
 mod volume;
 pub use properties::{FaceProperties, MassProperties, PropertiesOptions};
 
