@@ -298,6 +298,201 @@ impl TensorCell {
         ])
     }
 }
+/// Private interval calculation cell over a checked source patch. The
+/// coefficients enclose its original poles in a centered orthonormal chart;
+/// this does not construct replacement manufacturing geometry.
+pub(crate) fn calculation_cell(controls: [[I; 3]; 100]) -> TensorCell {
+    TensorCell {
+        controls: controls
+            .as_chunks::<10>()
+            .0
+            .iter()
+            .map(|row| row.to_vec())
+            .collect(),
+        domain: [[0., 1.]; 2],
+        depth: 0,
+    }
+}
+pub(crate) fn curve_taylor9(points: &[BoxPoint]) -> [[I; 3]; 10] {
+    let mut controls = points.iter().map(|&p| vec![p]).collect::<Vec<_>>();
+    let mut factorial = 1.;
+    std::array::from_fn(|order| {
+        let value = coefficient_hull(&controls).map(|v| v / I::point(factorial));
+        if order < 9 {
+            controls = derivative(&controls, 0);
+            factorial *= (order + 1) as f64;
+        }
+        value
+    })
+}
+pub(crate) fn curve_first_bounds(points: &[BoxPoint], t: I) -> [[I; 3]; 2] {
+    let derivatives = points
+        .windows(2)
+        .map(|p| std::array::from_fn(|k| (p[1][k] - p[0][k]) * I::point((points.len() - 1) as f64)))
+        .collect::<Vec<_>>();
+    [points, &derivatives].map(|p| {
+        let weights = bernstein(p.len() - 1, t);
+        let mut value = p[0];
+        for (point, weight) in p.iter().zip(weights).skip(1) {
+            for k in 0..3 {
+                value[k] = value[k] + weight * (point[k] - p[0][k]);
+            }
+        }
+        value
+    })
+}
+
+/// The exact polynomial normal P_u cross P_v of one calculation patch.
+/// Product coefficients are formed before interval hulls, preserving the
+/// cancellations lost by crossing two independent derivative boxes.
+pub(crate) struct NormalPolynomial {
+    controls: Vec<Vec<BoxPoint>>,
+}
+pub(crate) fn normal_polynomial(cell: &TensorCell) -> NormalPolynomial {
+    let du = derivative(&cell.controls, 0);
+    let dv = derivative(&cell.controls, 1);
+    let choose = |n: usize, k: usize| {
+        let mut value = I::point(1.);
+        for i in 0..k {
+            value = value * I::point((n - i) as f64) / I::point((i + 1) as f64);
+        }
+        value
+    };
+    let weights = std::array::from_fn::<_, 9, _>(|i| {
+        std::array::from_fn::<_, 10, _>(|j| choose(8, i) * choose(9, j) / choose(17, i + j))
+    });
+    let mut controls = vec![vec![[I::point(0.); 3]; 18]; 18];
+    for (i, row) in du.iter().enumerate() {
+        for (j, &u) in row.iter().enumerate() {
+            for (a, row) in dv.iter().enumerate() {
+                for (b, &v) in row.iter().enumerate() {
+                    let cross = [
+                        u[1] * v[2] - u[2] * v[1],
+                        u[2] * v[0] - u[0] * v[2],
+                        u[0] * v[1] - u[1] * v[0],
+                    ];
+                    let weight = weights[i][a] * weights[b][j];
+                    for k in 0..3 {
+                        controls[i + a][j + b][k] = controls[i + a][j + b][k] + weight * cross[k];
+                    }
+                }
+            }
+        }
+    }
+    NormalPolynomial { controls }
+}
+impl NormalPolynomial {
+    pub(crate) fn taylor8(
+        &self,
+        domain: [[f64; 2]; 2],
+        along_v: bool,
+    ) -> Result<[[I; 3]; 9], Error> {
+        let restricted = restricted_grid(self.controls.clone(), domain)?;
+        let mut controls = self.controls.clone();
+        let widths = domain.map(|d| I::point(d[1]) - I::point(d[0]));
+        let mut scale = widths[0] * widths[1];
+        let mut factorial = 1.;
+        Ok(std::array::from_fn(|order| {
+            // Differentiate the fixed root coefficients before multiplying
+            // the child chain factor. Differencing independently enclosed
+            // child coefficients would lose their shared source correlation
+            // and create a non-shrinking high-derivative uncertainty floor.
+            let hull = if order == 0 {
+                coefficient_hull(&restricted)
+            } else {
+                coefficient_hull(&controls)
+            };
+            let value = hull.map(|v| v * scale / I::point(factorial));
+            if order < 8 {
+                controls = derivative(&controls, usize::from(along_v));
+                factorial *= (order + 1) as f64;
+                scale = scale * widths[usize::from(along_v)];
+            }
+            value
+        }))
+    }
+}
+
+/// Interval Taylor coefficients through order eight, for P, P_u and P_v.
+/// All coordinates and derivatives use this retained leaf's unit square.
+/// A source leaf remains degree nine after subdivision; the ninth source
+/// derivative required here therefore never produces an empty control net.
+pub(crate) fn tensor_taylor8(cell: &TensorCell, along_v: bool) -> [[[I; 3]; 9]; 3] {
+    let base = [
+        cell.controls.clone(),
+        derivative(&cell.controls, 0),
+        derivative(&cell.controls, 1),
+    ];
+    base.map(|mut controls| {
+        let mut factorial = 1.;
+        std::array::from_fn(|order| {
+            let value = coefficient_hull(&controls).map(|v| v / I::point(factorial));
+            if order < 8 {
+                controls = derivative(&controls, usize::from(along_v));
+                factorial *= (order + 1) as f64;
+            }
+            value
+        })
+    })
+}
+fn coefficient_hull(controls: &[Vec<BoxPoint>]) -> BoxPoint {
+    let mut bounds = [I::new(f64::INFINITY, f64::NEG_INFINITY); 3];
+    for point in controls.iter().flatten() {
+        for i in 0..3 {
+            bounds[i].lo = bounds[i].lo.min(point[i].lo);
+            bounds[i].hi = bounds[i].hi.max(point[i].hi);
+        }
+    }
+    bounds
+}
+/// Factored Bernstein evaluation encloses P, P_u and P_v at the complete
+/// requested parameter intervals. The caller supplies unit-square nodes.
+/// Partition of unity is applied before rounding, retaining a large anchor
+/// once rather than repeatedly multiplying it by uncertain basis weights.
+pub(crate) fn tensor_first_bounds(cell: &TensorCell, uv: [I; 2]) -> [[I; 3]; 3] {
+    [
+        cell.controls.clone(),
+        derivative(&cell.controls, 0),
+        derivative(&cell.controls, 1),
+    ]
+    .map(|controls| {
+        let bu = bernstein(controls.len() - 1, uv[0]);
+        let bv = bernstein(controls[0].len() - 1, uv[1]);
+        let anchor = controls[0][0];
+        let mut delta = [I::point(0.); 3];
+        for (i, row) in controls.iter().enumerate() {
+            for (j, p) in row.iter().enumerate() {
+                if i == 0 && j == 0 {
+                    continue;
+                }
+                let weight = bu[i] * bv[j];
+                for k in 0..3 {
+                    delta[k] = delta[k] + weight * (p[k] - anchor[k]);
+                }
+            }
+        }
+        std::array::from_fn(|k| anchor[k] + delta[k])
+    })
+}
+fn bernstein(degree: usize, t: I) -> Vec<I> {
+    let one = I::point(1.) - t;
+    (0..=degree)
+        .map(|i| {
+            let mut c = I::point(1.);
+            for j in 0..i {
+                c = c * I::point((degree - j) as f64) / I::point((j + 1) as f64);
+            }
+            for _ in 0..i {
+                c = c * t;
+            }
+            for _ in i..degree {
+                c = c * one;
+            }
+            c
+        })
+        .collect()
+}
+
 fn transpose<T: Copy>(rows: Vec<Vec<T>>) -> Vec<Vec<T>> {
     (0..rows[0].len())
         .map(|j| rows.iter().map(|row| row[j]).collect())
@@ -324,14 +519,20 @@ fn derivative(p: &[Vec<BoxPoint>], axis: usize) -> Vec<Vec<BoxPoint>> {
         })
         .collect()
 }
-fn image_bounds(mut rows: Vec<Vec<BoxPoint>>, uv: [[f64; 2]; 2]) -> Result<[[f64; 2]; 3], Error> {
+fn image_bounds(rows: Vec<Vec<BoxPoint>>, uv: [[f64; 2]; 2]) -> Result<[[f64; 2]; 3], Error> {
+    hull(restricted_grid(rows, uv)?.into_iter().flatten())
+}
+fn restricted_grid(
+    mut rows: Vec<Vec<BoxPoint>>,
+    uv: [[f64; 2]; 2],
+) -> Result<Vec<Vec<BoxPoint>>, Error> {
     for [lo, hi] in uv {
         if !lo.is_finite() || !hi.is_finite() || lo < 0. || hi > 1. || lo > hi {
             return Err(Error::Invalid);
         }
     }
     if uv == [[0., 1.]; 2] {
-        return hull(rows.into_iter().flatten());
+        return Ok(rows);
     }
     for row in &mut rows {
         *row = restrict(row, I::new(uv[1][0], uv[1][1]))?;
@@ -342,7 +543,7 @@ fn image_bounds(mut rows: Vec<Vec<BoxPoint>>, uv: [[f64; 2]; 2]) -> Result<[[f64
     for column in &mut columns {
         *column = restrict(column, I::new(uv[0][0], uv[0][1]))?;
     }
-    hull(columns.into_iter().flatten())
+    Ok(transpose(columns))
 }
 fn hull(points: impl Iterator<Item = BoxPoint>) -> Result<[[f64; 2]; 3], Error> {
     let mut bounds = [I::new(f64::INFINITY, f64::NEG_INFINITY); 3];

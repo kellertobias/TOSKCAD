@@ -2,7 +2,7 @@
 use super::{Error, I, law::Scalar};
 use std::ops::{Add, Div, Mul, Neg, Sub};
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Series<const N: usize> {
+pub(crate) struct Series<const N: usize> {
     pub c: [I; N],
 }
 fn zero(v: I) -> bool {

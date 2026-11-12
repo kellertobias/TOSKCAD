@@ -1,7 +1,7 @@
 //! One retained cone-spine law shared by query and manufacturing arithmetic.
 use super::{I, J, Thread};
 use std::ops::{Add, Div, Mul, Neg, Sub};
-pub(super) trait Scalar:
+pub(crate) trait Scalar:
     Copy
     + Add<Output = Self>
     + Sub<Output = Self>

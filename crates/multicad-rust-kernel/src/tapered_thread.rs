@@ -13,12 +13,17 @@ mod series;
 mod support;
 mod tensor;
 use interval::{I, J};
+pub(crate) use law::Scalar;
 pub use mesh::{tessellate, tessellate_with_interrupt};
+pub(crate) use series::Series;
 pub use tensor::{
     MANUFACTURING_DEGREE, ManufacturingTensor, ManufacturingTensors, RetainedTensor,
     TaylorEnclosure, TensorCell, TensorDerivatives,
 };
-pub(crate) use tensor::{RadialChart, certify_radial_charts};
+pub(crate) use tensor::{
+    NormalPolynomial, RadialChart, calculation_cell, certify_radial_charts, curve_first_bounds,
+    curve_taylor9, normal_polynomial, tensor_first_bounds, tensor_taylor8,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {

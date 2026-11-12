@@ -7,6 +7,10 @@ use super::{
     *,
 };
 pub use hermite::{MANUFACTURING_DEGREE, ManufacturingTensor, ManufacturingTensors};
+pub(crate) use retained::{
+    NormalPolynomial, calculation_cell, curve_first_bounds, curve_taylor9, normal_polynomial,
+    tensor_first_bounds, tensor_taylor8,
+};
 pub(crate) use retained::{RadialChart, certify_radial_charts};
 pub use retained::{RetainedTensor, TensorCell, TensorDerivatives};
 type S = Series<13>;
