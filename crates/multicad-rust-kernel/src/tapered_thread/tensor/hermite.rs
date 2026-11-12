@@ -5,7 +5,7 @@ pub const MANUFACTURING_DEGREE: usize = 9;
 const D: usize = MANUFACTURING_DEGREE;
 const JETS: usize = 5;
 const ORDER: usize = 10;
-const MAX_POLES: usize = 524288;
+pub(super) const MAX_POLES: usize = 524288;
 #[derive(Clone, Debug, PartialEq)]
 pub struct ManufacturingTensor {
     band: usize,
@@ -364,87 +364,7 @@ impl Thread {
         points: &[[I; 3]],
         work: &mut Work<'_>,
     ) -> Result<(), Error> {
-        let [width, height] = tensor.dimensions();
-        if points.len() != width * height {
-            return Err(Error::Invalid);
-        }
-        for point in points {
-            for coordinate in point {
-                coordinate.checked()?;
-            }
-        }
-        let uw = std::array::from_fn::<_, { D + 1 }, _>(|i| {
-            std::array::from_fn::<_, D, _>(|a| {
-                I::point(binomial(D, i) * binomial(D - 1, a)) / I::point(binomial(2 * D - 1, i + a))
-            })
-        });
-        let zw = std::array::from_fn::<_, { D + 1 }, _>(|j| {
-            std::array::from_fn::<_, { D + 1 }, _>(|b| {
-                I::point(binomial(D, j) * binomial(D, b)) / I::point(binomial(2 * D, j + b))
-            })
-        });
-        for iu in 0..tensor.profile_spans {
-            for iz in 0..tensor.axial_spans {
-                let mut jacobian = vec![I::point(0.); 2 * D * (2 * D + 1)];
-                let point = |i: usize, j: usize| points[(iu * D + i) * height + iz * D + j];
-                for (i, urow) in uw.iter().enumerate() {
-                    for (a, &uweight) in urow.iter().enumerate() {
-                        work.step()?;
-                        for (j, zrow) in zw.iter().enumerate() {
-                            for (b, &zweight) in zrow.iter().enumerate() {
-                                let p = point(i, j);
-                                let from = point(a, b);
-                                let to = point(a + 1, b);
-                                let term = (p[0] * (to[1] - from[1]) - p[1] * (to[0] - from[0]))
-                                    * uweight
-                                    * zweight;
-                                let index = (i + a) * (2 * D + 1) + j + b;
-                                jacobian[index] = jacobian[index] + term;
-                            }
-                        }
-                    }
-                }
-                let mut minimum = f64::INFINITY;
-                for coefficient in jacobian {
-                    let oriented = if self.spec().left_hand {
-                        coefficient
-                    } else {
-                        -coefficient
-                    };
-                    minimum = minimum.min(oriented.positive()?.lo);
-                }
-                let mut zv = f64::INFINITY;
-                let mut zu = 0f64;
-                let mut rx = 0f64;
-                let mut ry = 0f64;
-                let mut vx = 0f64;
-                let mut vy = 0f64;
-                for i in 0..=D {
-                    for j in 0..=D {
-                        let p = point(i, j);
-                        rx = rx.max(p[0].magnitude());
-                        ry = ry.max(p[1].magnitude());
-                        if i < D {
-                            zu = zu.max((point(i + 1, j)[2] - p[2]).magnitude());
-                        }
-                        if j < D {
-                            let q = point(i, j + 1);
-                            zv = zv.min((q[2] - p[2]).positive()?.lo);
-                            vx = vx.max((q[0] - p[0]).magnitude());
-                            vy = vy.max((q[1] - p[1]).magnitude());
-                        }
-                    }
-                }
-                // det(theta,z) has numerator A_u*z_v - A_v*z_u.
-                // The positive first term must dominate axial roundoff in u.
-                let lower = I::point(minimum) * I::point(zv);
-                let cross_bound = I::point(rx) * I::point(vy) + I::point(ry) * I::point(vx);
-                (lower - cross_bound * I::point(zu)).positive()?;
-            }
-        }
-        // Positive angular Jacobian and axial derivative certify a regular
-        // radial graph, including very thin crests and true conical roots.
-        Ok(())
+        certify_radial_control_chart(tensor.spans(), points, self.spec().left_hand, work)
     }
     fn build_hermite_wall(
         &self,
@@ -559,6 +479,88 @@ impl Thread {
         Ok(tensor)
     }
 }
+pub(super) fn certify_radial_control_chart(
+    spans: [usize; 2],
+    points: &[[I; 3]],
+    forward: bool,
+    work: &mut Work<'_>,
+) -> Result<(), Error> {
+    let [_, height] = super::retained::checked_grid(spans, points.len())?;
+    for point in points {
+        for coordinate in point {
+            coordinate.checked()?;
+        }
+    }
+    let uw = std::array::from_fn::<_, { D + 1 }, _>(|i| {
+        std::array::from_fn::<_, D, _>(|a| {
+            I::point(binomial(D, i) * binomial(D - 1, a)) / I::point(binomial(2 * D - 1, i + a))
+        })
+    });
+    let zw = std::array::from_fn::<_, { D + 1 }, _>(|j| {
+        std::array::from_fn::<_, { D + 1 }, _>(|b| {
+            I::point(binomial(D, j) * binomial(D, b)) / I::point(binomial(2 * D, j + b))
+        })
+    });
+    for iu in 0..spans[0] {
+        for iz in 0..spans[1] {
+            let mut jacobian = vec![I::point(0.); 2 * D * (2 * D + 1)];
+            let point = |i: usize, j: usize| points[(iu * D + i) * height + iz * D + j];
+            for (i, urow) in uw.iter().enumerate() {
+                for (a, &uweight) in urow.iter().enumerate() {
+                    work.step()?;
+                    for (j, zrow) in zw.iter().enumerate() {
+                        for (b, &zweight) in zrow.iter().enumerate() {
+                            let p = point(i, j);
+                            let from = point(a, b);
+                            let to = point(a + 1, b);
+                            let term = (p[0] * (to[1] - from[1]) - p[1] * (to[0] - from[0]))
+                                * uweight
+                                * zweight;
+                            let index = (i + a) * (2 * D + 1) + j + b;
+                            jacobian[index] = jacobian[index] + term;
+                        }
+                    }
+                }
+            }
+            let mut minimum = f64::INFINITY;
+            for coefficient in jacobian {
+                let oriented = if forward { coefficient } else { -coefficient };
+                minimum = minimum.min(oriented.positive()?.lo);
+            }
+            let mut zv = f64::INFINITY;
+            let mut zu = 0f64;
+            let mut rx = 0f64;
+            let mut ry = 0f64;
+            let mut vx = 0f64;
+            let mut vy = 0f64;
+            for i in 0..=D {
+                for j in 0..=D {
+                    let p = point(i, j);
+                    rx = rx.max(p[0].magnitude());
+                    ry = ry.max(p[1].magnitude());
+                    if i < D {
+                        zu = zu.max((point(i + 1, j)[2] - p[2]).magnitude());
+                    }
+                    if j < D {
+                        let q = point(i, j + 1);
+                        zv = zv.min((q[2] - p[2]).positive()?.lo);
+                        vx = vx.max((q[0] - p[0]).magnitude());
+                        vy = vy.max((q[1] - p[1]).magnitude());
+                    }
+                }
+            }
+            // det(theta,z) has numerator A_u*z_v - A_v*z_u.
+            // The positive first term must dominate axial roundoff in u.
+            let lower = I::point(minimum) * I::point(zv);
+            let cross_bound = I::point(rx) * I::point(vy) + I::point(ry) * I::point(vx);
+            (lower - cross_bound * I::point(zu)).positive()?;
+        }
+    }
+    // Positive angular Jacobian and axial derivative certify a regular
+    // radial graph, including very thin crests and true conical roots.
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

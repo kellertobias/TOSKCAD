@@ -15,8 +15,10 @@ mod tensor;
 use interval::{I, J};
 pub use mesh::{tessellate, tessellate_with_interrupt};
 pub use tensor::{
-    MANUFACTURING_DEGREE, ManufacturingTensor, ManufacturingTensors, TaylorEnclosure,
+    MANUFACTURING_DEGREE, ManufacturingTensor, ManufacturingTensors, RetainedTensor,
+    TaylorEnclosure, TensorCell, TensorDerivatives,
 };
+pub(crate) use tensor::{RadialChart, certify_radial_charts};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {

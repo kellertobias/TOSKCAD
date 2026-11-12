@@ -1,11 +1,14 @@
 //! Source derivatives for bounded manufacturing tensors; no mesh is used.
 mod hermite;
+mod retained;
 use super::{
     law::Scalar,
     series::{Dual, Series},
     *,
 };
 pub use hermite::{MANUFACTURING_DEGREE, ManufacturingTensor, ManufacturingTensors};
+pub(crate) use retained::{RadialChart, certify_radial_charts};
+pub use retained::{RetainedTensor, TensorCell, TensorDerivatives};
 type S = Series<13>;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TaylorEnclosure {

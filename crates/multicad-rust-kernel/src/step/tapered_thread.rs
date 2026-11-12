@@ -616,5 +616,15 @@ mod tests {
             ),
             Err(crate::step_read::ReadError::Invalid)
         );
+        let retained = crate::step_read::read_radial_boundary(&file.data, 1e-7)
+            .unwrap()
+            .bind_surfaces(1e-7, None)
+            .unwrap()
+            .certify_axial(1e-7, 1e-6, None)
+            .unwrap();
+        assert!(matches!(
+            retained.certify_caps(None),
+            Err(Error::Unresolved)
+        ));
     }
 }

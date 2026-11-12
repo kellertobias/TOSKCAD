@@ -52,7 +52,7 @@ fn edge_definition(shell: &Shell<'_, '_>, id: u32) -> Result<EdgeDefinition> {
         forward: sense(forward)?,
     })
 }
-fn knots(mult: &Value<'_>, knots: &Value<'_>, spans: usize) -> Result<()> {
+pub(super) fn knots(mult: &Value<'_>, knots: &Value<'_>, spans: usize) -> Result<()> {
     let (Value::List(mult), Value::List(knots)) = (mult, knots) else {
         return Err(ReadError::Invalid);
     };
@@ -70,7 +70,7 @@ fn knots(mult: &Value<'_>, knots: &Value<'_>, spans: usize) -> Result<()> {
     }
     Ok(())
 }
-fn net(shell: &Shell<'_, '_>, surface: u32) -> Result<(Vec<Vec<Point>>, [usize; 2])> {
+pub(super) fn net(shell: &Shell<'_, '_>, surface: u32) -> Result<(Vec<Vec<Point>>, [usize; 2])> {
     let [
         Value::String(_),
         Value::Number(ud),

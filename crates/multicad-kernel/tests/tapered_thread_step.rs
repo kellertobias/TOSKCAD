@@ -40,6 +40,22 @@ fn actual_taper_step_matches_independent_native_material() {
             policy.linear_tolerance_mm,
         )
         .unwrap();
+        let retained = multicad_kernel::rust_kernel::step_read::read_radial_boundary(
+            &text,
+            policy.linear_tolerance_mm,
+        )
+        .unwrap()
+        .bind_surfaces(policy.linear_tolerance_mm, None)
+        .unwrap()
+        .certify_axial(policy.linear_tolerance_mm, policy.minimum_feature_mm, None)
+        .unwrap()
+        .certify_caps(None)
+        .unwrap()
+        .certify_ordering(None)
+        .unwrap()
+        .certify_material(policy.linear_tolerance_mm, None)
+        .unwrap();
+        let text = step::write_radial_boundary(&retained, policy.linear_tolerance_mm).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("transport.step");
         std::fs::write(&path, text).unwrap();
@@ -76,6 +92,17 @@ fn actual_taper_step_matches_independent_native_material() {
             let theta = (z - phase) / rate;
             for (offset, inside) in [(-0.0003, true), (0.0003, false)] {
                 let radius = radius + offset;
+                let location = retained
+                    .classify([radius * theta.cos(), radius * theta.sin(), z], None)
+                    .unwrap();
+                assert_eq!(
+                    location,
+                    if inside {
+                        multicad_kernel::rust_kernel::radial_tensor::Location::Inside
+                    } else {
+                        multicad_kernel::rust_kernel::radial_tensor::Location::Outside
+                    }
+                );
                 let edge: f64 = 0.00005;
                 let cube = Solid::box_solid([edge; 3], policy)
                     .unwrap()
