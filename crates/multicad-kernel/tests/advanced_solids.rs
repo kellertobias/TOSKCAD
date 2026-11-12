@@ -39,13 +39,26 @@ fn shell_inward_and_outward_have_real_walls_provenance_and_immutable_source() {
         .filter(|e| e.key.kind == TopologyKind::Face)
     {
         GeometryIntent::capture(&snapshot, element.key).unwrap();
+        let Some(AnalyticGeometry::Plane { frame }) = element.geometry else {
+            panic!("shell face has no planar support");
+        };
         for anchor in &element.frames {
-            assert_eq!(
-                Some(AnalyticGeometry::Plane {
-                    frame: anchor.frame
-                }),
-                element.geometry
+            // Authored attachment charts may retain a different in-plane
+            // origin and clock than the canonical analytic support chart.
+            let normal = frame.normal();
+            for (actual, expected) in anchor.frame.normal().into_iter().zip(normal) {
+                near(actual, expected);
+            }
+            near(
+                (0..3)
+                    .map(|i| (anchor.frame.origin_mm[i] - frame.origin_mm[i]) * normal[i])
+                    .sum(),
+                0.,
             );
+            for axis in [anchor.frame.u, anchor.frame.v] {
+                near(axis.into_iter().map(|v| v * v).sum(), 1.);
+                near(axis.into_iter().zip(normal).map(|(a, n)| a * n).sum(), 0.);
+            }
         }
     }
     let outward = source.shell_named(&[top], -2., feature, p()).unwrap();
@@ -56,14 +69,9 @@ fn shell_inward_and_outward_have_real_walls_provenance_and_immutable_source() {
     inward.write_step(&path).unwrap();
     let loaded = Solid::read_step(&path, p()).unwrap();
     near(loaded.volume_mm3().unwrap(), inward.volume_mm3().unwrap());
-    assert!(
-        source
-            .shell_named(&[], 2., feature, p())
-            .err()
-            .unwrap()
-            .message
-            .contains("Closed hollow thickness")
-    );
+    let closed_shell = source.shell_named(&[], 2., feature, p()).err().unwrap();
+    assert_eq!(closed_shell.kind, GeometryErrorKind::Unsupported);
+    assert!(closed_shell.message.to_lowercase().contains("opening"));
     assert!(source.shell_named(&[], 0., feature, p()).is_err());
     assert!(
         source
